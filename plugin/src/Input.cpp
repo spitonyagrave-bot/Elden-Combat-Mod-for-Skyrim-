@@ -56,9 +56,11 @@ RE::BSEventNotifyControl Input::ProcessEvent(RE::InputEvent* const* a_event, RE:
     const auto* userEvents = RE::UserEvents::GetSingleton();
 
     for (auto* event = *a_event; event; event = event->next) {
-        if (auto* stick = event->AsThumbstickEvent(); stick && stick->IsLeft()) {
-            stickX = stick->xValue;
-            stickY = stick->yValue;
+        if (event->GetEventType() == RE::INPUT_EVENT_TYPE::kThumbstick) {
+            if (auto* stick = static_cast<RE::ThumbstickEvent*>(event); stick->IsLeft()) {
+                stickX = stick->xValue;
+                stickY = stick->yValue;
+            }
             continue;
         }
         auto* button = event->AsButtonEvent();
