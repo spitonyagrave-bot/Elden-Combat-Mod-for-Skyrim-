@@ -1,4 +1,5 @@
 #include "Bridge.h"
+#include "CoreLoader.h"
 #include "Input.h"
 #include "Settings.h"
 
@@ -32,6 +33,11 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse)
     SKSE::Init(skse);
     SetupLog();
     logger::info("ERCombat {} loading", SKSE::PluginDeclaration::GetSingleton()->GetVersion().string());
+
+    if (auto error = CoreLoader::Load(); error != 0) {
+        logger::error("Couldn't load er_combat_core.dll next to ERCombat.dll (Windows error {}); combat stays off", error);
+        return true;
+    }
 
     Settings::Get().Load();
     Bridge::Install();
