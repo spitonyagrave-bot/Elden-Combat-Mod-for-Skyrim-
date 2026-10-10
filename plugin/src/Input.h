@@ -18,6 +18,10 @@ public:
     // whether it may go through).
     bool activatePressed = false;
 
+    // Elden Ring mode, flipped by the toggle key. Off at startup.
+    bool enabled = false;
+    bool toggled = false;  // flipped since the bridge last looked
+
 protected:
     RE::BSEventNotifyControl ProcessEvent(RE::InputEvent* const* a_event, RE::BSTEventSource<RE::InputEvent*>*) override;
 

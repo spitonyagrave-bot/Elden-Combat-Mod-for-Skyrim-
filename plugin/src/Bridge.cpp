@@ -42,14 +42,20 @@ void Bridge::Update(RE::PlayerCharacter* a_this, float a_delta)
 
 void Bridge::Tick(RE::PlayerCharacter* player, float delta)
 {
+    auto* input = Input::Get();
+    if (input->toggled) {
+        input->toggled = false;
+        logger::info("Elden Ring mode {}", input->enabled ? "on" : "off");
+        RE::DebugNotification(input->enabled ? "Elden Ring Modus: AN" : "Elden Ring Modus: AUS");
+    }
+
     auto* state = player->AsActorState();
-    const bool want = state && state->IsWeaponDrawn() && !MenuUp() && !player->IsDead() &&
+    const bool want = input->enabled && state && state->IsWeaponDrawn() && !MenuUp() && !player->IsDead() &&
                       !RE::PlayerCamera::GetSingleton()->IsInFirstPerson();
     if (want != combatMode) {
         SetCombatMode(want);
     }
 
-    auto* input = Input::Get();
     if (!combatMode) {
         input->Take(0.0f);  // drop edges so nothing fires on entry
         input->activatePressed = false;
@@ -102,7 +108,6 @@ void Bridge::SetCombatMode(bool on)
 {
     combatMode = on;
     logger::info("Combat mode {}", on ? "on" : "off");
-    RE::DebugNotification(on ? "ERCombat: Kampfmodus an" : "ERCombat: Kampfmodus aus");
     if (auto* controls = RE::PlayerControls::GetSingleton()) {
         // The core owns these while a weapon is drawn. Movement, Activate,
         // shouts, sneaking and the camera stay with Skyrim.

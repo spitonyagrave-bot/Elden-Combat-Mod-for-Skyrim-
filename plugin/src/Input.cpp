@@ -89,7 +89,14 @@ RE::BSEventNotifyControl Input::ProcessEvent(RE::InputEvent* const* a_event, RE:
             continue;  // TODO: gamepad bindings.
         }
 
-        if (code == settings.dodgeKey) {
+        if (code == settings.toggleKey) {
+            // Not while typing in the console or a text field, or in menus.
+            auto* ui = RE::UI::GetSingleton();
+            if (button->IsDown() && ui && !ui->GameIsPaused() && !ui->IsMenuOpen(RE::Console::MENU_NAME)) {
+                enabled = !enabled;
+                toggled = true;
+            }
+        } else if (code == settings.dodgeKey) {
             dodge.Set(down);
         } else if (code == settings.jumpKey) {
             jump.Set(down);

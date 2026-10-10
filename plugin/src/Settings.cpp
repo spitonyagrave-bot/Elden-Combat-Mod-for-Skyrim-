@@ -32,6 +32,7 @@ Settings& Settings::Get()
 
 void Settings::Load()
 {
+    toggleKey = ReadKey(L"Toggle", toggleKey);
     dodgeKey = ReadKey(L"Dodge", dodgeKey);
     jumpKey = ReadKey(L"Jump", jumpKey);
     lightKey = ReadKey(L"Light", lightKey);

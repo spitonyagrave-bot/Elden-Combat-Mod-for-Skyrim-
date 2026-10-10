@@ -7,6 +7,7 @@ struct Settings
 {
     // DirectInput scan codes for keyboard keys; mouse buttons are 256 + n
     // (256 left, 257 right, 258 middle), the same scheme SkyUI's MCM uses.
+    std::uint32_t toggleKey = 0x22;     // G: Elden Ring mode on/off
     std::uint32_t dodgeKey = 0x38;      // Left Alt: tap to roll, hold to sprint
     std::uint32_t jumpKey = 0x39;       // Space
     std::uint32_t lightKey = 256;       // Left mouse

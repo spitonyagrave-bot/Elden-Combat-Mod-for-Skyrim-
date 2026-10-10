@@ -4,7 +4,8 @@
 
 // Runs the combat core alongside Skyrim's own player update.
 //
-// Combat mode is on only while a weapon is drawn and no menu is up. While it
+// Combat mode is on only while Elden Ring mode is switched on (toggle key),
+// a weapon is drawn and no menu is up. While it
 // is on, the core owns dodging, sprinting, jumping and attacks: Skyrim's own
 // handlers for those are switched off, and each action the core starts is
 // played through the animation event named in ERCombat.ini. Activate,
