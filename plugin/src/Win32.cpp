@@ -2,19 +2,20 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
+#include <ShlObj.h>
 
 #include <string>
 
-#include "CoreLoader.h"
+#include "Win32.h"
 
-namespace CoreLoader
+namespace Win32
 {
-    std::uint32_t Load()
+    std::uint32_t LoadCore()
     {
         HMODULE self = nullptr;
         if (!GetModuleHandleExW(
                 GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                reinterpret_cast<LPCWSTR>(&Load), &self)) {
+                reinterpret_cast<LPCWSTR>(&LoadCore), &self)) {
             return GetLastError();
         }
 
@@ -37,5 +38,17 @@ namespace CoreLoader
             return GetLastError();
         }
         return 0;
+    }
+
+    std::optional<std::filesystem::path> LogDirectory()
+    {
+        PWSTR documents = nullptr;
+        if (SHGetKnownFolderPath(FOLDERID_Documents, KF_FLAG_DEFAULT, nullptr, &documents) != S_OK) {
+            CoTaskMemFree(documents);
+            return std::nullopt;
+        }
+        std::filesystem::path path = documents;
+        CoTaskMemFree(documents);
+        return path / "My Games" / "Skyrim Special Edition" / "SKSE";
     }
 }

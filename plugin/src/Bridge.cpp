@@ -73,6 +73,13 @@ void Bridge::Tick(RE::PlayerCharacter* player, float delta)
     ErOutput out{};
     er_update(combat, delta, &controls, &world, &out);
 
+    if (controls.dodge.pressed || controls.jump.pressed || controls.light.pressed || controls.heavy.pressed ||
+        controls.guard.pressed) {
+        logger::info("Input: dodge {} jump {} light {} heavy {} guard {} move ({:.2f}, {:.2f}) -> state {} stamina {:.2f}",
+            controls.dodge.pressed, controls.jump.pressed, controls.light.pressed, controls.heavy.pressed,
+            controls.guard.pressed, controls.move_x, controls.move_y, static_cast<std::uint32_t>(out.state), out.stamina);
+    }
+
     if (out.action_serial != lastSerial) {
         lastSerial = out.action_serial;
         PlayAction(player, out);
@@ -95,6 +102,7 @@ void Bridge::SetCombatMode(bool on)
 {
     combatMode = on;
     logger::info("Combat mode {}", on ? "on" : "off");
+    RE::DebugNotification(on ? "ERCombat: Kampfmodus an" : "ERCombat: Kampfmodus aus");
     if (auto* controls = RE::PlayerControls::GetSingleton()) {
         // The core owns these while a weapon is drawn. Movement, Activate,
         // shouts, sneaking and the camera stay with Skyrim.
@@ -124,16 +132,21 @@ void Bridge::PlayAction(RE::PlayerCharacter* player, const ErOutput& out)
     }
     const auto& base = Settings::Get().events[kind];
     if (base.empty()) {
+        logger::info("Action {} ({}): no event set in ERCombat.ini", static_cast<std::uint32_t>(kind), static_cast<const char*>(out.action));
         return;
     }
     if (Directional(kind) && out.action_dir < kDirSuffix.size()) {
         const auto named = base + std::string(kDirSuffix[out.action_dir]);
         if (player->NotifyAnimationGraph(named.c_str())) {
+            logger::info("Action {} ({}): played {}", static_cast<std::uint32_t>(kind), static_cast<const char*>(out.action), named);
             return;
         }
+        logger::info("Action {} ({}): no animation answered {}", static_cast<std::uint32_t>(kind), static_cast<const char*>(out.action), named);
     }
-    if (!player->NotifyAnimationGraph(base.c_str())) {
-        logger::debug("No animation answered {} for action {}", base, static_cast<std::uint32_t>(kind));
+    if (player->NotifyAnimationGraph(base.c_str())) {
+        logger::info("Action {} ({}): played {}", static_cast<std::uint32_t>(kind), static_cast<const char*>(out.action), base);
+    } else {
+        logger::info("Action {} ({}): no animation answered {}", static_cast<std::uint32_t>(kind), static_cast<const char*>(out.action), base);
     }
 }
 

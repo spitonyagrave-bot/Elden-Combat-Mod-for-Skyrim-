@@ -1,13 +1,13 @@
 #include "Bridge.h"
-#include "CoreLoader.h"
 #include "Input.h"
 #include "Settings.h"
+#include "Win32.h"
 
 namespace
 {
     void SetupLog()
     {
-        auto dir = logger::log_directory();
+        auto dir = Win32::LogDirectory();
         if (!dir) {
             return;
         }
@@ -34,7 +34,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse)
     SetupLog();
     logger::info("ERCombat {} loading", SKSE::PluginDeclaration::GetSingleton()->GetVersion().string());
 
-    if (auto error = CoreLoader::Load(); error != 0) {
+    if (auto error = Win32::LoadCore(); error != 0) {
         logger::error("Couldn't load er_combat_core.dll next to ERCombat.dll (Windows error {}); combat stays off", error);
         return true;
     }

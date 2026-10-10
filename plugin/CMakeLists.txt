@@ -20,15 +20,15 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/Bridge.cpp
         src/Input.cpp
         src/Settings.cpp
-        src/CoreLoader.cpp
+        src/Win32.cpp
 )
 target_precompile_headers(${PROJECT_NAME} PRIVATE src/PCH.h)
 target_include_directories(${PROJECT_NAME} PRIVATE src "${ER_CORE_DIR}/include")
-set_source_files_properties(src/CoreLoader.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
-target_link_libraries(${PROJECT_NAME} PRIVATE "${ER_CORE_LIB}" delayimp)
+set_source_files_properties(src/Win32.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+target_link_libraries(${PROJECT_NAME} PRIVATE "${ER_CORE_LIB}" delayimp shell32 ole32)
 # SKSE loads plugins by full path, but Windows only looks for their
 # dependencies next to SkyrimSE.exe. Delay-load the core and load it from
-# the plugin folder ourselves (CoreLoader) before anything calls into it.
+# the plugin folder ourselves (Win32::LoadCore) before anything calls into it.
 target_link_options(${PROJECT_NAME} PRIVATE "/DELAYLOAD:er_combat_core.dll")
 
 # Collect what goes into the mod archive.
