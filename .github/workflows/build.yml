@@ -1,0 +1,48 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    env:
+      VCPKG_ROOT: C:\vcpkg
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Core tests
+        working-directory: core
+        run: cargo test
+
+      - name: Core release build
+        working-directory: core
+        run: cargo build --release
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - uses: seanmiddleditch/gha-setup-ninja@v5
+
+      - name: Update vcpkg
+        shell: pwsh
+        run: |
+          git -C $env:VCPKG_ROOT pull --quiet
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+
+      - name: Configure plugin
+        working-directory: plugin
+        run: cmake --preset release
+
+      - name: Build plugin
+        working-directory: plugin
+        run: cmake --build --preset release
+
+      - name: Upload mod files
+        uses: actions/upload-artifact@v4
+        with:
+          name: ERCombat-mod
+          path: plugin/dist/
