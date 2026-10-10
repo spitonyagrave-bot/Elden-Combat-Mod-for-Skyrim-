@@ -8,8 +8,6 @@ on:
 jobs:
   windows:
     runs-on: windows-2022
-    env:
-      VCPKG_ROOT: C:\vcpkg
     steps:
       - uses: actions/checkout@v4
 
@@ -27,11 +25,15 @@ jobs:
 
       - uses: seanmiddleditch/gha-setup-ninja@v5
 
+      # The runner's own vcpkg clone. The MSVC environment above points
+      # VCPKG_ROOT at Visual Studio's bundled copy, which has no bootstrap.
       - name: Update vcpkg
         shell: pwsh
         run: |
-          git -C $env:VCPKG_ROOT pull --quiet
-          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          $root = $env:VCPKG_INSTALLATION_ROOT
+          git -C $root pull --quiet
+          & "$root\bootstrap-vcpkg.bat" -disableMetrics
+          "VCPKG_ROOT=$root" >> $env:GITHUB_ENV
 
       - name: Configure plugin
         working-directory: plugin
