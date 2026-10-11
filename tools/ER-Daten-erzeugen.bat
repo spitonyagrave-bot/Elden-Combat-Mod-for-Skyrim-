@@ -2,7 +2,7 @@
 rem Doppelklicken. Erzeugt aus deinem eigenen Elden Ring die Daten fuer die
 rem Skyrim-Mod. Die Werkzeuge im Ordner "tools" stammen aus
 rem ELDEN-RING-Combat-Rewrite (MIT, siehe LICENSE.md).
-setlocal
+setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 
 rem Find the game's Oodle DLL and the unpacked chr folder anywhere under the
@@ -32,17 +32,17 @@ rem The params WitchyBND unpacked from this install's own regulation.bin.
 set "PARAMS="
 for /f "delims=" %%P in ('dir /s /b "%ROOT%\EquipParamWeapon.param" 2^>nul ^| findstr /v /i "\\_backup\\"') do if not defined PARAMS set "PARAMS=%%~dpP"
 if not defined GAME (
-    echo Keine oo2core_..._win64.dll unter %ROOT% gefunden.
+    echo Keine oo2core_..._win64.dll unter !ROOT! gefunden.
     pause
     exit /b 1
 )
 if not defined CHR (
-    echo c0000.anibnd.dcx nicht gefunden unter %ROOT%. Bitte in UXM entpacken.
+    echo c0000.anibnd.dcx nicht gefunden unter !ROOT!. Bitte in UXM entpacken.
     pause
     exit /b 1
 )
 if not defined PARAMS (
-    echo Die regulation.bin von %ROOT% ist noch nicht entpackt.
+    echo Die regulation.bin von !ROOT! ist noch nicht entpackt.
     echo Bitte die regulation.bin aus dem Game Ordner auf die WitchyBND.exe ziehen,
     echo danach diese Datei nochmal starten.
     pause
@@ -57,7 +57,7 @@ set "ER_FILES=%~dp0er-files"
 set "ER_GAME_DIR=%GAME%"
 for %%F in (c0000.anibnd.dcx c0000_a00_hi.anibnd.dcx c0000_a00_lo.anibnd.dcx c0000_a00_md.anibnd.dcx c0000_a0x.anibnd.dcx c0000_a1x.anibnd.dcx c0000_a2x.anibnd.dcx c0000_a3x.anibnd.dcx c0000_a4x.anibnd.dcx c0000_a5x.anibnd.dcx) do (
     if not exist "%CHR%\%%F" (
-        echo Fehlt: %CHR%\%%F
+        echo Fehlt: !CHR!\%%F
         echo Bitte diese Datei in UXM noch entpacken.
         pause
         exit /b 1
