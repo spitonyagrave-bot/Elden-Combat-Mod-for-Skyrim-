@@ -1,4 +1,5 @@
 #include "Bridge.h"
+#include "Hits.h"
 #include "Input.h"
 #include "Integrations.h"
 #include "PoseDriver.h"
@@ -85,7 +86,10 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse)
     LoadData();
 
     Settings::Get().Load();
+    // Room for the call hooks (Hits, and the movement hook).
+    SKSE::AllocTrampoline(128);
     Bridge::Install();
+    Hits::Install();
     PoseDriver::Install();
     SKSE::GetMessagingInterface()->RegisterListener(OnMessage);
     return true;

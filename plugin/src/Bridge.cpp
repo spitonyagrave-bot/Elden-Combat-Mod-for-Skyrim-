@@ -1,5 +1,6 @@
 #include "Bridge.h"
 
+#include "Hits.h"
 #include "Input.h"
 #include "Integrations.h"
 #include "PoseDriver.h"
@@ -164,12 +165,18 @@ void Bridge::Tick(RE::PlayerCharacter* player, float delta)
 
     if (out.action_serial != lastSerial) {
         lastSerial = out.action_serial;
+        hitThisSwing.clear();
         PlayAction(player, out);
     }
 
     if (out.hit_live && (posing || Settings::Get().coreHitDetection)) {
         CoreHits(player, out);
+    } else if (!out.hit_live && hitLive) {
+        // A swing with more than one hit (a spin, a combo in one clip): each
+        // hit may strike everyone it reaches once.
+        hitThisSwing.clear();
     }
+    hitLive = out.hit_live != 0;
 
     // Guard: raise and lower Skyrim's block, so its blocking (damage, block
     // perks, stamina) and the list's block mods see a raised guard.
@@ -335,24 +342,34 @@ void Bridge::CoreHits(RE::PlayerCharacter* player, const ErOutput& out)
         return;
     }
     const auto me = player->GetPosition();
-    // Skyrim's own damage for the weapon in hand, times the swing's motion value.
-    float base = 4.0f;
-    if (auto* weapon = player->GetEquippedObject(false); weapon && weapon->IsWeapon()) {
-        base = static_cast<float>(weapon->As<RE::TESObjectWEAP>()->GetAttackDamage());
-    }
-    const float bodyRadius = 22.0f;
+    const auto kind = out.action_kind;
+    const bool leftHand = kind == ER_ACTION_LEFT_ATTACK;
+    const bool power = kind == ER_ACTION_HEAVY_ATTACK || kind == ER_ACTION_JUMP_ATTACK_LAND ||
+                       kind == ER_ACTION_GUARD_COUNTER || out.hit_motion >= 1.2f;
     for (auto& handle : lists->highActorHandles) {
         auto ptr = handle.get();
         auto* actor = ptr.get();
-        if (!actor || actor == player || actor->IsDead() || !actor->Get3D()) {
+        if (!actor || actor == player || actor->IsDead() || !actor->Get3D() || hitThisSwing.contains(handle.native_handle())) {
             continue;
         }
         const auto at = actor->GetPosition();
         if (at.GetDistance(me) > 700.0f) {
             continue;
         }
-        const ErVec3 feet{ at.x, at.y, at.z + bodyRadius };
-        const ErVec3 head{ at.x, at.y, at.z + 120.0f * actor->GetScale() - bodyRadius };
+        // The target's body as a capsule from its own bounds (a draugr, a
+        // giant and a skeever differ), padded so a blade that grazes the
+        // armour counts, as Skyrim's own swing test does.
+        const float scale = actor->GetScale();
+        const auto lo = actor->GetBoundMin();
+        const auto hi = actor->GetBoundMax();
+        const float width = std::max(hi.x - lo.x, hi.y - lo.y) * scale;
+        const float bodyRadius = std::clamp(width * 0.5f, 18.0f, 120.0f) + Settings::Get().hitPadding;
+        float height = actor->GetHeight();
+        if (height < 20.0f) {
+            height = 128.0f * scale;
+        }
+        const ErVec3 feet{ at.x, at.y, at.z + 10.0f };
+        const ErVec3 head{ at.x, at.y, at.z + height };
         bool touched = false;
         for (int i = 0; i < ER_SWEEP_STEPS && !touched; ++i) {
             touched = SegmentDistance(out.sweep_a[i], out.sweep_b[i], feet, head) <= out.hit_radius + bodyRadius;
@@ -360,22 +377,20 @@ void Bridge::CoreHits(RE::PlayerCharacter* player, const ErOutput& out)
         if (!touched) {
             continue;
         }
+        hitThisSwing.insert(handle.native_handle());
         {
             std::lock_guard lock(CoreLock());
             er_confirm_hit(combat);
         }
-        const float damage = base * out.hit_motion * Settings::Get().damageScale;
-        actor->AsActorValueOwner()->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kHealth, -damage);
-        // Stagger by how heavy the swing is.
-        actor->SetGraphVariableFloat("staggerMagnitude"sv, std::clamp(out.hit_motion * 0.5f, 0.1f, 1.0f));
-        actor->NotifyAnimationGraph("staggerStart"sv);
+        const float before = actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kHealth);
+        Hits::Strike(player, actor, out.hit_motion, leftHand, power);
+        const float after = actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kHealth);
         RE::ShakeCamera(Settings::Get().hitShake * out.hit_motion, me, 0.25f);
         if (!Settings::Get().hitSound.empty()) {
             RE::PlaySound(Settings::Get().hitSound.c_str());
         }
-        logger::info("Core hit {} for {:.1} (weapon {:.0} x motion {:.2})", actor->GetName(), damage, base, out.hit_motion);
-        // One target per swing, as the core marks the swing landed.
-        break;
+        logger::info("Core hit {} with the {} hand: motion {:.2f}{}, health {:.0f} -> {:.0f}", actor->GetName(),
+            leftHand ? "left" : "right", out.hit_motion, power ? " (power)" : "", before, after);
     }
 }
 

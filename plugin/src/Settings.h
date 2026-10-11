@@ -33,6 +33,8 @@ struct Settings
     bool rootMotion = true;
     float damageScale = 1.0f;
     float hitShake = 0.3f;
+    // Skyrim units added to a target's body radius for the hit test.
+    float hitPadding = 20.0f;
     std::string hitSound;
 
     // [Pose]: play the Elden Ring animations on the player's skeleton

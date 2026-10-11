@@ -98,5 +98,6 @@ void Settings::Load()
     rootMotion = GetPrivateProfileIntW(L"Pose", L"RootMotion", 1, kPath) != 0;
     damageScale = ReadFloat(L"Pose", L"DamageScale", damageScale);
     hitShake = ReadFloat(L"Pose", L"HitShake", hitShake);
+    hitPadding = ReadFloat(L"Pose", L"HitPadding", hitPadding);
     hitSound = ReadString(L"Pose", L"HitSound", "");
 }

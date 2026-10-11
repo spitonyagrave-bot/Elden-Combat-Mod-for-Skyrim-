@@ -42,6 +42,9 @@ private:
 
     static inline ErCombat* combat = nullptr;
     static inline bool combatMode = false;
+    // Who this hit of the swing already struck.
+    static inline std::unordered_set<std::uint32_t> hitThisSwing;
+    static inline bool hitLive = false;
     static inline bool lastSupported = true;
     static inline std::uint32_t lastSerial = 0;
     static inline bool iframes = false;
