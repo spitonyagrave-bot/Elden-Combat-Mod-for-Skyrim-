@@ -8,11 +8,11 @@ struct Settings
     // DirectInput scan codes for keyboard keys; mouse buttons are 256 + n
     // (256 left, 257 right, 258 middle), the same scheme SkyUI's MCM uses.
     std::uint32_t toggleKey = 0x28;     // Ä on a German keyboard (' on US): Elden Ring mode on/off
-    std::uint32_t dodgeKey = 0x38;      // Left Alt: tap to roll, hold to sprint
+    std::uint32_t dodgeKey = 0x2A;      // Left Shift: tap to roll, hold to sprint
     std::uint32_t jumpKey = 0x39;       // Space
     std::uint32_t lightKey = 256;       // Left mouse
     std::uint32_t guardKey = 257;       // Right mouse: guard, or left-hand attack
-    std::uint32_t heavyModifier = 0x2A; // Left Shift + light = heavy
+    std::uint32_t heavyModifier = 0x38; // Left Alt + light = heavy
     std::uint32_t walkKey = 0x3A;       // Caps Lock
     std::uint32_t lockKey = 258;        // Middle mouse: lock on / off, as in Elden Ring
     std::uint32_t lockPad = 0x0080;     // Gamepad R3 (XInput right thumb)

@@ -147,7 +147,7 @@ RE::BSEventNotifyControl Input::ProcessEvent(RE::InputEvent* const* a_event, RE:
         } else if (code == settings.walkKey && button->IsDown()) {
             walk = !walk;
         } else if (code == settings.lightKey) {
-            // Shift + light is the heavy attack, as in Elden Ring on keyboard.
+            // HeavyModifier (Left Alt) + light is the heavy attack.
             (heavyModifierHeld || heavy.held ? heavy : light).Set(down);
         } else if (code == settings.guardKey) {
             guard.Set(down);

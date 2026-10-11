@@ -58,4 +58,5 @@ private:
     static inline RE::NiPoint3 walkEnd;
     static inline RE::ActorHandle lockTarget;
     static inline ErState lastState = ER_STATE_GROUND;
+    static inline ErAction lastKind = ER_ACTION_NONE;
 };

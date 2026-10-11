@@ -136,9 +136,15 @@ void Bridge::Tick(RE::PlayerCharacter* player, float delta)
     RE::Actor* target = UpdateLock(player, controls.lock != 0, cameraHeading);
     ErWorld world{};
     world.position = ToEr(player->GetPosition());
-    // TODO: ray cast for the ground under the player. Standing on it is the
-    // common case, and Skyrim's controller keeps the player on the floor.
+    // Standing is the common case, and Skyrim's controller keeps the player
+    // on the floor. During a jump, though, Skyrim's own jump carries the
+    // player: the core stays airborne for as long as Skyrim has the player
+    // in the air (room for the jump attack), and lands when Skyrim does.
+    // (Only then: running down stairs must not count as a fall.)
     world.ground_z = player->GetPosition().z;
+    if (player->IsInMidair() && (lastState == ER_STATE_AIR || (lastState == ER_STATE_ACTION && lastKind == ER_ACTION_JUMP))) {
+        world.ground_z -= 10000.0f;
+    }
     world.in_combat = player->IsInCombat();
     // Our own lock-on (TDM's is switched off in Elden Ring mode).
     world.has_target = target != nullptr;
@@ -196,6 +202,7 @@ void Bridge::Tick(RE::PlayerCharacter* player, float delta)
             static_cast<const char*>(out.action), out.stamina);
         lastState = out.state;
     }
+    lastKind = out.action_kind;
 
     if (controls.dodge.pressed || controls.jump.pressed || controls.light.pressed || controls.heavy.pressed ||
         controls.guard.pressed) {
@@ -279,6 +286,7 @@ void Bridge::SetCombatMode(bool on)
         }
         lastSerial = 0;
         lastState = ER_STATE_GROUND;
+        lastKind = ER_ACTION_NONE;
         if (blocking) {
             blocking = false;
             if (auto* player = RE::PlayerCharacter::GetSingleton()) {

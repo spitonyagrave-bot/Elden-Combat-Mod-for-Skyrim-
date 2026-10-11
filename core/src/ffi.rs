@@ -246,6 +246,10 @@ pub struct ErCombat {
     /// Once that has happened, the height (Skyrim units) the player is held
     /// at, taken as ground for as long as Skyrim keeps the player there.
     held_at: Option<f32>,
+    /// Presses and one-shots from frames too short for a simulation tick
+    /// (above 60 fps most frames have none): kept for the next tick, so no
+    /// press is lost.
+    carry: Option<Input>,
 }
 
 impl ErCombat {
@@ -260,6 +264,7 @@ impl ErCombat {
             last_z: None,
             air_still: 0.0,
             held_at: None,
+            carry: None,
         }
     }
 
@@ -275,7 +280,10 @@ impl ErCombat {
         // the same height frame after frame: Skyrim never jumped (no animation
         // answered, or something held the player down). Land where Skyrim
         // has the player rather than stay airborne, and locked, for ever.
-        let standing = self.last_z.is_some_and(|z| (z - world.position.z).abs() < 1.0);
+        // (Under a unit per frame at 60 fps, whatever the frame rate: the top
+        // of a real jump is slower than that per frame at high frame rates.)
+        let still = (60.0 * dt.max(0.0)).min(1.0);
+        let standing = self.last_z.is_some_and(|z| (z - world.position.z).abs() < still.max(0.05));
         self.last_z = Some(world.position.z);
         if matches!(self.player.state, State::Air(_)) && standing {
             self.air_still += dt.max(0.0);
@@ -297,12 +305,20 @@ impl ErCombat {
 
         self.pending = (self.pending + dt.max(0.0)).min(DT * MAX_TICKS_PER_FRAME as f32);
         let mut first = sim_input(input);
+        if let Some(carry) = self.carry.take() {
+            first = with_edges(&first, &carry);
+        }
         let held = held_only(&first);
+        let mut ticked = false;
         while self.pending >= DT {
+            ticked = true;
             self.player.step(&first, &self.level, target, world.in_combat != 0);
             self.pending -= DT;
             first = held;
             self.note_new_action();
+        }
+        if !ticked {
+            self.carry = Some(first);
         }
         self.output()
     }
@@ -530,6 +546,25 @@ fn held_only(i: &Input) -> Input {
         next_weapon: false,
         next_left: false,
         ..*i
+    }
+}
+
+/// `now`, plus the presses and one-shots of an earlier frame that no tick saw.
+fn with_edges(now: &Input, earlier: &Input) -> Input {
+    let join = |n: Button, e: Button| Button { held: n.held, pressed: n.pressed || e.pressed, released: n.released || e.released };
+    Input {
+        dodge: join(now.dodge, earlier.dodge),
+        jump: join(now.jump, earlier.jump),
+        light: join(now.light, earlier.light),
+        heavy: join(now.heavy, earlier.heavy),
+        guard: join(now.guard, earlier.guard),
+        crouch: now.crouch || earlier.crouch,
+        lock: now.lock || earlier.lock,
+        two_hand_right: now.two_hand_right || earlier.two_hand_right,
+        two_hand_left: now.two_hand_left || earlier.two_hand_left,
+        next_weapon: now.next_weapon || earlier.next_weapon,
+        next_left: now.next_left || earlier.next_left,
+        ..*now
     }
 }
 
@@ -924,6 +959,69 @@ mod tests {
         assert!(out.position.y.abs() < 10.0, "drifted off the heading: {:?}", out.position);
         assert_eq!(out.state, ErState::Ground);
         assert_eq!(out.interruptible, 1);
+    }
+
+    /// Skyrim's own jump carries the player (Jumps=Skyrim): the bridge says
+    /// the ground is far below while Skyrim has the player in the air, and
+    /// the core must stay airborne until Skyrim lands, with room for the
+    /// jump attack.
+    #[test]
+    fn jump_attack_comes_out_of_skyrims_jump() {
+        let mut c = ErCombat::new(ErVec3::default());
+        let mut world = ErWorld { heading: 0.0, ..Default::default() };
+        let mut input = ErInput::default();
+        tap(&mut input.jump);
+        let mut last = c.output();
+        let (mut airtime, mut air_attack, mut landed_attack) = (None::<f32>, false, false);
+        for i in 0..240 {
+            let t = i as f32 * FRAME;
+            // Skyrim leaves the ground a little after the press, 350 u/s up.
+            let flight = (t - 0.15).max(0.0);
+            let z = (350.0 * flight - 0.5 * 686.0 * flight * flight).max(0.0);
+            let midair = z > 0.0;
+            let jumping = last.state == ErState::Air || (last.state == ErState::Action && last.action_kind == ErAction::Jump);
+            world.ground_z = if midair && jumping { -10000.0 } else { 0.0 };
+            if (0.45..0.47).contains(&t) {
+                tap(&mut input.light);
+            }
+            let out = c.update(FRAME, &input, &world);
+            world.position = ErVec3 { x: out.position.x, y: out.position.y, z };
+            input = ErInput::default();
+            air_attack |= out.air_attack != 0;
+            landed_attack |= out.action_kind == ErAction::JumpAttackLand;
+            if !midair && flight > 0.0 && airtime.is_none() {
+                airtime = Some(flight);
+            }
+            last = out;
+        }
+        assert!(airtime.is_some(), "Skyrim's arc lands");
+        assert!(air_attack, "the light press in the air starts the jump attack");
+        assert!(landed_attack, "landing finishes it with the jump attack's landing swing");
+    }
+
+    /// Above 60 fps most frames step no simulation tick; a press in one of
+    /// those frames must still count (it was lost before).
+    #[test]
+    fn a_press_in_a_frame_without_a_tick_still_counts() {
+        let mut c = ErCombat::new(ErVec3::default());
+        let world = ErWorld::default();
+        let fast = 1.0 / 240.0;
+        let idle = ErInput::default();
+        // Line the clock up just after a tick, so the next frame has none.
+        for _ in 0..8 {
+            c.update(fast, &idle, &world);
+        }
+        while c.pending + fast >= DT {
+            c.update(fast, &idle, &world);
+        }
+        let mut input = ErInput::default();
+        tap(&mut input.light);
+        c.update(fast, &input, &world);
+        let mut attacked = false;
+        for _ in 0..20 {
+            attacked |= c.update(fast, &idle, &world).state == ErState::Action;
+        }
+        assert!(attacked, "the light press starts an attack");
     }
 
     #[test]
