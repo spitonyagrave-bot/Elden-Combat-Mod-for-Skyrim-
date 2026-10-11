@@ -18,10 +18,17 @@ set "ROOT=%ROOT:"=%"
 set "GAME="
 set "CHR="
 echo Suche in %ROOT% ...
-for /f "delims=" %%D in ('dir /s /b "%ROOT%\oo2core_6_win64.dll" 2^>nul') do if not defined GAME set "GAME=%%~dpD"
+rem Any Oodle 2 core will do; the tools expect it under the name oo2core_6.
+set "OODLE="
+for /f "delims=" %%D in ('dir /s /b "%ROOT%\oo2core_*_win64.dll" 2^>nul') do if not defined OODLE set "OODLE=%%D"
+if defined OODLE (
+    if not exist "oodle" mkdir "oodle"
+    copy /y "%OODLE%" "oodle\oo2core_6_win64.dll" >nul
+    set "GAME=%~dp0oodle\"
+)
 for /f "delims=" %%C in ('dir /s /b "%ROOT%\c0000.anibnd.dcx" 2^>nul ^| findstr /v /i "\\_backup\\"') do if not defined CHR set "CHR=%%~dpC"
 if not defined GAME (
-    echo oo2core_6_win64.dll nicht gefunden unter %ROOT%.
+    echo Keine oo2core_..._win64.dll unter %ROOT% gefunden.
     pause
     exit /b 1
 )
@@ -32,7 +39,7 @@ if not defined CHR (
 )
 set "GAME=%GAME:~0,-1%"
 set "CHR=%CHR:~0,-1%"
-echo Oodle:  %GAME%
+echo Oodle:   %OODLE%
 echo Dateien: %CHR%
 set "ER_FILES=%~dp0er-files"
 set "ER_GAME_DIR=%GAME%"
