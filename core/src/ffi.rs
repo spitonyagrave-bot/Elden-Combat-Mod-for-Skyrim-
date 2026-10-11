@@ -617,23 +617,33 @@ mod tests {
 
     #[test]
     fn light_attack_has_a_live_swing_in_front_that_lands_once() {
-        let mut c = ErCombat::new(ErVec3::default());
-        let mut world = ErWorld::default();
-        let mut input = ErInput::default();
-        tap(&mut input.light);
-        frame(&mut c, &input, &mut world);
-        input.light = ErButton::default();
-        let mut live = None;
-        for _ in 0..40 {
-            let out = frame(&mut c, &input, &mut world);
-            if out.hit_live != 0 {
-                live = Some(out);
-                break;
+        let start = || {
+            let mut c = ErCombat::new(ErVec3::default());
+            let mut world = ErWorld::default();
+            let mut input = ErInput::default();
+            tap(&mut input.light);
+            frame(&mut c, &input, &mut world);
+            input.light = ErButton::default();
+            for _ in 0..40 {
+                let out = frame(&mut c, &input, &mut world);
+                if out.hit_live != 0 {
+                    return (c, world, input, out);
+                }
             }
+            panic!("the swing should go live");
+        };
+
+        // Heading 0 faces +Y. A real swing can open behind the shoulder, so
+        // the blade only has to come out in front somewhere in its window.
+        let (mut c, mut world, input, mut out) = start();
+        let mut ahead = false;
+        while out.hit_live != 0 {
+            ahead |= out.sweep_b.iter().any(|b| b.y > out.position.y);
+            out = frame(&mut c, &input, &mut world);
         }
-        let out = live.expect("the swing should go live");
-        // Heading 0 faces +Y: the blade is out in front.
-        assert!(out.sweep_b.iter().all(|b| b.y > out.position.y));
+        assert!(ahead, "the blade swings out in front");
+
+        let (mut c, _, _, out) = start();
         assert!(out.hit_damage > 0.0 && out.hit_radius > 0.0);
         c.confirm_hit();
         assert_eq!(c.output().hit_live, 0, "a swing lands once");
