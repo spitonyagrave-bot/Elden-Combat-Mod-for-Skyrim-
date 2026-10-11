@@ -18,6 +18,18 @@ static_assert(offsetof(ErOutput, air_attack) == 78);
 
 namespace
 {
+    float WrapAngle(float a)
+    {
+        constexpr float kPi = 3.14159265f;
+        while (a > kPi) {
+            a -= 2.0f * kPi;
+        }
+        while (a < -kPi) {
+            a += 2.0f * kPi;
+        }
+        return a;
+    }
+
     ErVec3 ToEr(const RE::NiPoint3& p) { return { p.x, p.y, p.z }; }
 
     constexpr std::array kDirSuffix{ "Forward"sv, "Back"sv, "Left"sv, "Right"sv };
@@ -134,6 +146,10 @@ void Bridge::Tick(RE::PlayerCharacter* player, float delta)
     const bool ownMovement = Movement::Active();
     const ErInput controls = input->Take(cameraHeading);
     RE::Actor* target = UpdateLock(player, controls.lock != 0, cameraHeading);
+    if (const int flick = Movement::TakeFlick(); flick != 0 && target) {
+        target = SwitchTarget(player, target, flick);
+    }
+    Movement::SetLocked(target != nullptr);
     ErWorld world{};
     world.position = ToEr(player->GetPosition());
     // Standing is the common case, and Skyrim's controller keeps the player
@@ -178,7 +194,20 @@ void Bridge::Tick(RE::PlayerCharacter* player, float delta)
     const bool acting = out.state != ER_STATE_GROUND && out.state != ER_STATE_DEAD;
     const bool ownYaw = out.state != ER_STATE_DEAD && (ownMovement || acting || target);
     if (ownYaw) {
-        Movement::Turn(player, out.heading);
+        // The core turns in 60 Hz steps; above 60 fps the player turns every
+        // frame toward the core's facing instead of jumping each tick. A new
+        // action (a roll squaring up) or a big gap snaps at once.
+        const float diff = WrapAngle(out.heading - shownYaw);
+        if (!yawValid || out.action_serial != lastSerial || std::abs(diff) > 1.2f) {
+            shownYaw = out.heading;
+        } else {
+            const float rate = std::max(25.0f, std::abs(diff) * 20.0f) * delta;
+            shownYaw = WrapAngle(shownYaw + std::clamp(diff, -rate, rate));
+        }
+        yawValid = true;
+        Movement::Turn(player, shownYaw);
+    } else {
+        yawValid = false;
     }
     // TDM keeps its hands off the yaw while the core turns the player, and
     // its directional movement pauses while ours runs (and while locked on:
@@ -215,6 +244,12 @@ void Bridge::Tick(RE::PlayerCharacter* player, float delta)
         lastSerial = out.action_serial;
         hitThisSwing.clear();
         PlayAction(player, out);
+        if (out.action_kind == ER_ACTION_JUMP_ATTACK_LAND && Settings::Get().landShake > 0.0f) {
+            RE::ShakeCamera(Settings::Get().landShake, player->GetPosition(), 0.35f);
+        }
+    }
+    if (out.hit_live && !hitLive) {
+        PlaySwing(player, out);
     }
 
     if (out.hit_live && (posing || Settings::Get().coreHitDetection)) {
@@ -372,6 +407,12 @@ void Bridge::ApplyRootMotion(RE::PlayerCharacter* player, const ErWorld& world, 
     if (!Settings::Get().rootMotion) {
         return;
     }
+    // In the air Skyrim's own jump carries the player: moving the player
+    // here would hold the fall (the player hung in the air after a jump
+    // attack).
+    if (player->IsInMidair()) {
+        return;
+    }
     const float dx = out.position.x - world.position.x;
     const float dy = out.position.y - world.position.y;
     const float step = std::sqrt(dx * dx + dy * dy);
@@ -481,14 +522,26 @@ void Bridge::Walk(RE::PlayerCharacter* player, const ErWorld& world, const ErOut
     const float dx = out.position.x - world.position.x;
     const float dy = out.position.y - world.position.y;
     const float step = std::sqrt(dx * dx + dy * dy);
-    if (out.speed < 5.0f || step < 1e-3f || out.state == ER_STATE_ACTION) {
+    if (out.speed < 5.0f || out.state == ER_STATE_ACTION) {
         Movement::SetMove(0.0f, 0.0f);
         walkValid = false;
+        walkDirValid = false;
         return;
     }
-    const float h = out.heading;
+    // Above 60 fps most frames have no simulation tick and no step: keep
+    // running the way the last tick went (stopping on those frames made the
+    // run stutter and crawl).
+    if (step >= 1e-3f) {
+        walkDirX = dx / step;
+        walkDirY = dy / step;
+        walkDirValid = true;
+    } else if (!walkDirValid) {
+        Movement::SetMove(0.0f, 0.0f);
+        return;
+    }
+    const float h = player->GetAngleZ();
     const float fx = std::sin(h), fy = std::cos(h);
-    const float wx = dx / step, wy = dy / step;
+    const float wx = walkDirX, wy = walkDirY;
     const float forward = wx * fx + wy * fy;
     const float right = wx * fy - wy * fx;
     // Skyrim walks below about half input and runs above; the core's speed
@@ -582,6 +635,97 @@ void Bridge::CoreHits(RE::PlayerCharacter* player, const ErOutput& out)
         logger::info("Core hit {} with the {} hand: motion {:.2f}{}, health {:.0f} -> {:.0f}", actor->GetName(),
             leftHand ? "left" : "right", out.hit_motion, power ? " (power)" : "", before, after);
     }
+}
+
+void Bridge::PlaySwing(RE::PlayerCharacter* player, const ErOutput& out)
+{
+    if (!Settings::Get().swingSound) {
+        return;
+    }
+    const bool left = out.action_kind == ER_ACTION_LEFT_ATTACK;
+    auto* form = player->GetEquippedObject(left);
+    auto* weapon = form ? form->As<RE::TESObjectWEAP>() : nullptr;
+    auto* audio = RE::BSAudioManager::GetSingleton();
+    if (!audio) {
+        return;
+    }
+    RE::BSSoundHandle sound;
+    // The weapon's own swing sound when it has one, else Skyrim's swing for
+    // its kind of weapon (the first descriptor this game knows).
+    if (weapon && weapon->attackSound) {
+        audio->BuildSoundDataFromDescriptor(sound, weapon->attackSound);
+    }
+    if (!sound.IsValid()) {
+        const bool heavy = weapon && (weapon->IsTwoHandedSword() || weapon->IsTwoHandedAxe() || out.hit_motion >= 1.2f);
+        const bool blunt = weapon && (weapon->IsOneHandedMace() || (weapon->IsTwoHandedAxe() && weapon->HasKeywordString("WeapTypeWarhammer")));
+        static const std::array<const char*, 4> kBlade{ "WPNSwingBladeMediumSD", "WPNSwingBladeMedium", "WPNBlade1HandSwingSD", "WPNSwingBlade1HandSD" };
+        static const std::array<const char*, 4> kBladeLarge{ "WPNSwingBladeLargeSD", "WPNSwingBladeLarge", "WPNBlade2HandSwingSD", "WPNSwingBlade2HandSD" };
+        static const std::array<const char*, 4> kBlunt{ "WPNSwingBluntMediumSD", "WPNSwingBluntMedium", "WPNBlunt1HandSwingSD", "WPNSwingBlunt1HandSD" };
+        static const std::array<const char*, 4> kBluntLarge{ "WPNSwingBluntLargeSD", "WPNSwingBluntLarge", "WPNBlunt2HandSwingSD", "WPNSwingBlunt2HandSD" };
+        static const std::array<const char*, 4> kUnarmed{ "WPNSwingUnarmedSD", "WPNSwingUnarmed", "NPCHumanUnarmedSwingSD", "WPNSwingBladeMediumSD" };
+        const auto& names = !weapon ? kUnarmed : blunt ? (heavy ? kBluntLarge : kBlunt) : (heavy ? kBladeLarge : kBlade);
+        for (const char* name : names) {
+            audio->BuildSoundDataFromEditorID(sound, name, 0x1A);
+            if (sound.IsValid()) {
+                if (!swingLogged) {
+                    swingLogged = true;
+                    logger::info("Swing sound: {}", name);
+                }
+                break;
+            }
+        }
+    }
+    if (!sound.IsValid()) {
+        if (!swingLogged) {
+            swingLogged = true;
+            logger::info("Swing sound: none of Skyrim's swing sounds found (set [Pose] HitSound or a weapon attack sound)");
+        }
+        return;
+    }
+    if (auto* node = player->Get3D()) {
+        sound.SetObjectToFollow(node);
+    }
+    sound.Play();
+}
+
+RE::Actor* Bridge::SwitchTarget(RE::PlayerCharacter* player, RE::Actor* current, int side)
+{
+    auto* lists = RE::ProcessLists::GetSingleton();
+    if (!lists) {
+        return current;
+    }
+    const auto me = player->GetPosition();
+    const auto at = current->GetPosition();
+    const float base = std::atan2(at.x - me.x, at.y - me.y);
+    const float range = Settings::Get().lockRange * 70.0f;
+    RE::Actor* best = nullptr;
+    float bestAngle = 0.0f;
+    for (auto& handle : lists->highActorHandles) {
+        auto ptr = handle.get();
+        auto* actor = ptr.get();
+        if (!actor || actor == player || actor == current || actor->IsDead() || !actor->Get3D()) {
+            continue;
+        }
+        const auto p = actor->GetPosition();
+        if (p.GetDistance(me) > range) {
+            continue;
+        }
+        // Heading grows clockwise: right of the current target is positive.
+        const float angle = WrapAngle(std::atan2(p.x - me.x, p.y - me.y) - base) * static_cast<float>(side);
+        if (angle <= 0.02f) {
+            continue;
+        }
+        if (!best || angle < bestAngle) {
+            best = actor;
+            bestAngle = angle;
+        }
+    }
+    if (!best) {
+        return current;
+    }
+    lockTarget = best->GetHandle();
+    logger::info("Lock-on switched {} to {}", side > 0 ? "right" : "left", best->GetName());
+    return best;
 }
 
 RE::Actor* Bridge::FindLockTarget(RE::PlayerCharacter* player, float heading)

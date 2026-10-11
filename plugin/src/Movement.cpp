@@ -35,6 +35,7 @@ void Movement::Install()
 
     REL::Relocation<std::uintptr_t> look{ RE::VTABLE_LookHandler[0] };
     _LookThumbstick = look.write_vfunc(0x2 + shift, LookThumbstick);
+    _LookMouse = look.write_vfunc(0x3 + shift, LookMouse);
 
     REL::Relocation<std::uintptr_t> third{ RE::VTABLE_ThirdPersonState[0] };
     _SetFreeRotationMode = third.write_vfunc(0xD, SetFreeRotationMode);
@@ -66,6 +67,50 @@ void Movement::SetActive(bool on)
         }
     }
     logger::info("Elden Ring movement and camera {}", on ? "on" : "off");
+}
+
+void Movement::SetLocked(bool on)
+{
+    if (locked != on) {
+        locked = on;
+        flickSum = 0.0f;
+        flick = 0;
+        stickCentred = true;
+    }
+}
+
+int Movement::TakeFlick()
+{
+    return flick.exchange(0);
+}
+
+void Movement::LookMouse(RE::LookHandler* a_this, RE::MouseMoveEvent* a_event, RE::PlayerControlsData* a_data)
+{
+    if (!active || !locked || !a_event) {
+        _LookMouse(a_this, a_event, a_data);
+        return;
+    }
+    // A quick sideways swipe switches targets; slow drift is ignored. The
+    // camera itself stays on the target (pitch still follows the mouse).
+    const auto now = std::chrono::steady_clock::now();
+    const float gap = std::chrono::duration<float>(now - lastFlickInput).count();
+    lastFlickInput = now;
+    if (gap > 0.15f || now < flickBlockedUntil) {
+        flickSum = 0.0f;
+    }
+    if (now >= flickBlockedUntil) {
+        flickSum += static_cast<float>(a_event->mouseInputX);
+        if (std::abs(flickSum) >= Settings::Get().lockFlickMouse) {
+            flick = flickSum > 0.0f ? 1 : -1;
+            flickSum = 0.0f;
+            // One switch per swipe: the rest of it is spent.
+            flickBlockedUntil = now + std::chrono::milliseconds(300);
+        }
+    }
+    const auto x = a_event->mouseInputX;
+    a_event->mouseInputX = 0;
+    _LookMouse(a_this, a_event, a_data);
+    a_event->mouseInputX = x;
 }
 
 void Movement::SetMove(float x, float y)
@@ -137,6 +182,22 @@ void Movement::ProcessButton(RE::MovementHandler* a_this, RE::ButtonEvent* a_eve
 
 void Movement::LookThumbstick(RE::LookHandler* a_this, RE::ThumbstickEvent* a_event, RE::PlayerControlsData* a_data)
 {
+    if (active && locked && a_event && a_event->IsRight()) {
+        // Locked on, a push of the right stick to the side switches targets.
+        const float x = a_event->xValue;
+        if (std::abs(x) < 0.3f) {
+            stickCentred = true;
+        } else if (std::abs(x) > 0.75f && stickCentred) {
+            stickCentred = false;
+            flick = x > 0.0f ? 1 : -1;
+        }
+        const float y = a_event->yValue;
+        a_event->xValue = 0.0f;
+        _LookThumbstick(a_this, a_event, a_data);
+        a_event->xValue = x;
+        a_event->yValue = y;
+        return;
+    }
     const float smoothing = Settings::Get().padLookSmoothing;
     if (!active || !a_event || !a_event->IsRight() || smoothing <= 0.0f) {
         _LookThumbstick(a_this, a_event, a_data);

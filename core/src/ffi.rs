@@ -114,6 +114,8 @@ pub struct ErWorld {
 /// Skyrim decides whether the player really left the ground; the simulation
 /// must never wait for a fall that is not happening.
 const STUCK_IN_AIR_SECONDS: f32 = 0.25;
+/// The most the pose is ever raised above Skyrim's player, Skyrim units.
+const MAX_LIFT: f32 = 200.0;
 
 /// What the player is doing, for the bridge to pick animations.
 #[repr(u32)]
@@ -347,11 +349,13 @@ impl ErCombat {
         (self.pending / DT).clamp(0.0, 1.0) * crate::sim::data::DF
     }
 
-    /// How high the simulation has the player above the ground Skyrim
-    /// reported (a jump's arc), Skyrim units.
+    /// How far the simulation has the player above where Skyrim has the
+    /// player (a jump arc Skyrim doesn't carry), Skyrim units. The pose is
+    /// root-local, so a jump Skyrim carries itself adds nothing; never more
+    /// than a jump's height, whatever the ground says.
     pub fn lift(&self) -> f32 {
-        let ground = self.level.height(self.player.pos.x, self.player.pos.z);
-        ((self.player.pos.y - ground) * UNITS_PER_METRE).max(0.0)
+        let skyrim = self.last_z.map_or(self.player.pos.y * UNITS_PER_METRE, |z| z);
+        (self.player.pos.y * UNITS_PER_METRE - skyrim).clamp(0.0, MAX_LIFT)
     }
 
     pub fn player(&self) -> &Player {
@@ -1022,6 +1026,26 @@ mod tests {
             attacked |= c.update(fast, &idle, &world).state == ErState::Action;
         }
         assert!(attacked, "the light press starts an attack");
+    }
+
+    /// While Skyrim carries the jump the ground the bridge reports is far
+    /// below: the pose must not be lifted toward it (the body was pulled
+    /// apart into the sky).
+    #[test]
+    fn lift_follows_skyrims_player_not_the_far_ground() {
+        let mut c = ErCombat::new(ErVec3::default());
+        let mut world = ErWorld::default();
+        let mut input = ErInput::default();
+        tap(&mut input.jump);
+        for i in 0..60 {
+            let t = i as f32 * FRAME;
+            let z = (350.0 * t - 343.0 * t * t).max(0.0);
+            world.ground_z = if z > 0.0 { -10000.0 } else { 0.0 };
+            let out = c.update(FRAME, &input, &world);
+            world.position = ErVec3 { x: out.position.x, y: out.position.y, z };
+            input = ErInput::default();
+            assert!(c.lift() <= MAX_LIFT && c.lift() < 100.0, "lift {} at frame {i}", c.lift());
+        }
     }
 
     #[test]

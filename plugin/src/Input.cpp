@@ -38,7 +38,12 @@ ErInput Input::Take(float cameraHeading)
     out.move_x = x;
     out.move_y = y;
     out.camera_heading = cameraHeading;
+    // Sprint (Shift) only ever holds the button: no press, so it never rolls.
+    // The roll key (Alt) presses it, also mid-sprint.
     out.dodge = dodge.Take();
+    const ErButton run = sprint.Take();
+    out.dodge.held = out.dodge.held || run.held;
+    out.dodge.released = out.dodge.released || (run.released && !dodge.held);
     out.jump = jump.Take();
     out.light = light.Take();
     out.heavy = heavy.Take();
@@ -140,6 +145,10 @@ RE::BSEventNotifyControl Input::ProcessEvent(RE::InputEvent* const* a_event, RE:
             }
         } else if (code == settings.dodgeKey) {
             dodge.Set(down);
+        } else if (code == settings.sprintKey) {
+            sprint.Set(down);
+        } else if (code == settings.heavyKey) {
+            heavy.Set(down);
         } else if (code == settings.jumpKey) {
             jump.Set(down);
         } else if (code == settings.heavyModifier) {
@@ -148,7 +157,7 @@ RE::BSEventNotifyControl Input::ProcessEvent(RE::InputEvent* const* a_event, RE:
             walk = !walk;
         } else if (code == settings.lightKey) {
             // HeavyModifier (Left Alt) + light is the heavy attack.
-            (heavyModifierHeld || heavy.held ? heavy : light).Set(down);
+            (settings.heavyModifier != 0 && (heavyModifierHeld || heavy.held) ? heavy : light).Set(down);
         } else if (code == settings.guardKey) {
             guard.Set(down);
         } else if (code == settings.lockKey && button->IsDown()) {

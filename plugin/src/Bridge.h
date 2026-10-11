@@ -39,6 +39,11 @@ private:
     static RE::NiPoint3 Collide(RE::PlayerCharacter* player, RE::NiPoint3 move);
     static void CoreHits(RE::PlayerCharacter* player, const ErOutput& out);
     // Elden Ring's lock-on: the enemy nearest the middle of the view.
+    // The next target to the left (-1) or right (+1) of the current one.
+    static RE::Actor* SwitchTarget(RE::PlayerCharacter* player, RE::Actor* current, int side);
+    // A whoosh when a swing goes live (Skyrim's swing sounds come from its
+    // own attack animations, which don't play in Elden Ring mode).
+    static void PlaySwing(RE::PlayerCharacter* player, const ErOutput& out);
     static RE::Actor* FindLockTarget(RE::PlayerCharacter* player, float heading);
     static RE::Actor* UpdateLock(RE::PlayerCharacter* player, bool pressed, float heading);
     static void PlayAction(RE::PlayerCharacter* player, const ErOutput& out);
@@ -56,6 +61,11 @@ private:
     static inline bool heldMovement = false;
     static inline bool walkValid = false;
     static inline RE::NiPoint3 walkEnd;
+    static inline bool walkDirValid = false;
+    static inline float walkDirX = 0.0f, walkDirY = 0.0f;
+    static inline float shownYaw = 0.0f;
+    static inline bool yawValid = false;
+    static inline bool swingLogged = false;
     static inline RE::ActorHandle lockTarget;
     static inline ErState lastState = ER_STATE_GROUND;
     static inline ErAction lastKind = ER_ACTION_NONE;

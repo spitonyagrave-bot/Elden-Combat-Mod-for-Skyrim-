@@ -60,7 +60,7 @@ private:
         }
     };
 
-    Key dodge, jump, light, heavy, guard;
+    Key dodge, sprint, jump, light, heavy, guard;
     bool heavyModifierHeld = false;
     bool crouchPressed = false;
     bool walk = false;

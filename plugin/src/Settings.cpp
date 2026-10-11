@@ -63,6 +63,8 @@ void Settings::Load()
     lightKey = ReadKey(L"Light", lightKey);
     guardKey = ReadKey(L"Guard", guardKey);
     heavyModifier = ReadKey(L"HeavyModifier", heavyModifier);
+    sprintKey = ReadKey(L"Sprint", sprintKey);
+    heavyKey = ReadKey(L"Heavy", heavyKey);
     walkKey = ReadKey(L"Walk", walkKey);
     lockKey = ReadKey(L"LockOn", lockKey);
     lockPad = ReadKey(L"LockOnGamepad", lockPad);
@@ -108,6 +110,9 @@ void Settings::Load()
     lockCameraSpeed = ReadFloat(L"Movement", L"LockCameraSpeed", lockCameraSpeed);
     padLookSmoothing = ReadFloat(L"Movement", L"PadLookSmoothing", padLookSmoothing);
     autoTwoHand = GetPrivateProfileIntW(L"Weapons", L"AutoTwoHand", 1, kPath) != 0;
+    lockFlickMouse = ReadFloat(L"LockOn", L"FlickMouse", lockFlickMouse);
+    swingSound = GetPrivateProfileIntW(L"Impact", L"SwingSound", 1, kPath) != 0;
+    landShake = ReadFloat(L"Impact", L"LandShake", landShake);
     {
         auto lower = [](std::string v) {
             std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });

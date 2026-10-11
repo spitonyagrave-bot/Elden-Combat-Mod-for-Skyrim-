@@ -34,6 +34,12 @@ public:
     // Glides the camera toward looking along `yaw` (the lock-on target).
     static void SteerCamera(RE::PlayerCharacter* player, float yaw, float delta);
 
+    // Locked on: sideways mouse or right-stick movement no longer turns the
+    // camera; a flick switches targets instead (Elden Ring's lock switch).
+    static void SetLocked(bool on);
+    // -1 (left), +1 (right) once per flick, else 0.
+    static int TakeFlick();
+
     // The camera's heading (the player's facing plus the free rotation).
     static float CameraHeading(RE::PlayerCharacter* player);
 
@@ -48,6 +54,9 @@ private:
     static void LookThumbstick(RE::LookHandler* a_this, RE::ThumbstickEvent* a_event, RE::PlayerControlsData* a_data);
     static inline REL::Relocation<decltype(LookThumbstick)> _LookThumbstick;
 
+    static void LookMouse(RE::LookHandler* a_this, RE::MouseMoveEvent* a_event, RE::PlayerControlsData* a_data);
+    static inline REL::Relocation<decltype(LookMouse)> _LookMouse;
+
     static void SetFreeRotationMode(RE::ThirdPersonState* a_this, bool a_weaponSheathed);
     static inline REL::Relocation<decltype(SetFreeRotationMode)> _SetFreeRotationMode;
 
@@ -60,4 +69,10 @@ private:
     static inline RE::NiPoint2 move{ 0.0f, 0.0f };
     static inline float lookX = 0.0f, lookY = 0.0f;
     static inline std::chrono::steady_clock::time_point lastLook{};
+    static inline std::atomic<bool> locked = false;
+    static inline std::atomic<int> flick = 0;
+    static inline float flickSum = 0.0f;
+    static inline std::chrono::steady_clock::time_point lastFlickInput{};
+    static inline std::chrono::steady_clock::time_point flickBlockedUntil{};
+    static inline bool stickCentred = true;
 };
