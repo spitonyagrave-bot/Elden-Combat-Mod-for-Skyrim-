@@ -1145,10 +1145,11 @@ fn the_left_hand_cycles_through_shield_nothing_torch_and_weapons() {
     assert_eq!(w.player.left, shield());
     run(&mut w, idle(), 80);
     assert_eq!(w.player.left, fist());
-    // An empty hand punches.
+    // An empty left hand next to a weapon guards with it (Skyrim's block),
+    // it doesn't punch.
     w.step(&GUARD_TAP);
-    let bare = Moveset { weapon: fist() as u8, two_hand: false };
-    assert_eq!(id(&w), Some(ActionId::Attack(bare, AttackKind::LeftLight1)));
+    assert!(!matches!(id(&w), Some(ActionId::Attack(..))));
+    assert!(w.player.guarding);
 }
 
 #[test]

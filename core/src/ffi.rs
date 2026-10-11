@@ -1198,6 +1198,29 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_left_hand_guards_with_the_right_weapon() {
+        use crate::sim::data::{fist, shield};
+        use crate::sim::player::LeftButton;
+        let mut c = ErCombat::new(ErVec3::default());
+        let sword = if shield() == 0 { 1 } else { 0 };
+        assert_ne!(sword, fist());
+        c.set_armaments(sword as i32, fist() as i32, false);
+        assert_eq!(c.player.left_button(), LeftButton::Guard);
+        let world = ErWorld { ground_z: 0.0, ..Default::default() };
+        let press = ErInput { guard: ErButton { pressed: 1, held: 1, released: 0 }, ..Default::default() };
+        let hold = ErInput { guard: ErButton { pressed: 0, held: 1, released: 0 }, ..Default::default() };
+        let mut out = c.update(FRAME, &press, &world);
+        for _ in 0..20 {
+            out = c.update(FRAME, &hold, &world);
+        }
+        assert_eq!(out.guarding, 1, "the guard is up");
+        assert_ne!(out.action_kind, ErAction::LeftAttack, "no punch");
+        // Fists in both hands: the left button punches.
+        c.set_armaments(fist() as i32, fist() as i32, false);
+        assert_eq!(c.player.left_button(), LeftButton::Attack);
+    }
+
+    #[test]
     fn armaments_change_the_moveset() {
         use crate::sim::data::{shield, weapons, Grip};
         let names: Vec<&str> = weapons().iter().map(|w| w.name).collect();

@@ -262,10 +262,13 @@ impl Player {
         self.grip == Grip::OneHand && self.left == self.weapon && self.moveset().has(AttackKind::PairedLight1)
     }
 
-    /// A shield guards, and so does any weapon held in both hands. Anything
-    /// else in the left hand attacks.
+    /// A shield guards, and so does any weapon held in both hands. An empty
+    /// left hand next to a real weapon guards with that weapon, as Skyrim
+    /// blocks with it; only a fist build (fists in both hands) punches with
+    /// the left. Anything else in the left hand attacks.
     pub fn left_button(&self) -> LeftButton {
-        if self.grip == Grip::OneHand && self.left != shield() {
+        let empty_left = self.left == fist() && self.weapon != fist();
+        if self.grip == Grip::OneHand && self.left != shield() && !empty_left {
             LeftButton::Attack
         } else {
             LeftButton::Guard
