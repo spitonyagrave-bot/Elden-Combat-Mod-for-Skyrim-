@@ -1086,6 +1086,49 @@ mod tests {
         assert!(cfg!(not(er_data)) || out.position.x > start.x + 50.0, "rolled toward +X: {:?} -> {:?}", start, out.position);
     }
 
+    /// Jump, then Light in the air: the swing goes live on the way down and
+    /// the landing plays the jump attack's follow-through. Skyrim does not
+    /// jump along (as with the pose driver), and it still works.
+    #[test]
+    fn a_jump_attack_comes_from_jump_then_light() {
+        let mut c = ErCombat::new(ErVec3::default());
+        let world = ErWorld::default();
+        let mut input = ErInput { move_y: 1.0, ..Default::default() };
+        c.update(FRAME, &input, &world);
+        tap(&mut input.jump);
+        c.update(FRAME, &input, &world);
+        input.jump = ErButton::default();
+        let (mut live, mut landed) = (false, false);
+        for i in 0..240 {
+            if i == 12 {
+                tap(&mut input.light);
+            }
+            let out = c.update(FRAME, &input, &world);
+            input.light = ErButton::default();
+            live |= out.hit_live != 0;
+            if out.action_kind == ErAction::JumpAttackLand {
+                landed = true;
+                break;
+            }
+        }
+        assert!(live, "the jump attack's swing goes live in the air");
+        assert!(landed, "and lands into its follow-through");
+    }
+
+    /// Locked on, the core turns the player to face the target, and the
+    /// output heading says so (the bridge applies it while locked).
+    #[test]
+    fn locked_on_the_core_faces_the_target() {
+        let mut c = ErCombat::new(ErVec3::default());
+        // Target off to Skyrim's +X: heading 90 degrees.
+        let world = ErWorld { has_target: 1, target: ErVec3 { x: 500.0, ..Default::default() }, ..Default::default() };
+        let mut out = c.output();
+        for _ in 0..60 {
+            out = c.update(FRAME, &ErInput { move_y: 0.5, ..Default::default() }, &world);
+        }
+        assert!((out.heading - std::f32::consts::FRAC_PI_2).abs() < 0.05, "heading {}", out.heading);
+    }
+
     #[test]
     fn follows_skyrims_heading_when_asked() {
         let mut c = ErCombat::new(ErVec3::default());

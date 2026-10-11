@@ -34,6 +34,9 @@ private:
     static void ApplyRootMotion(RE::PlayerCharacter* player, const ErWorld& world, const ErOutput& out, bool acting);
     static void ReleaseMovement();
     static void CoreHits(RE::PlayerCharacter* player, const ErOutput& out);
+    // Elden Ring's lock-on: the enemy nearest the middle of the view.
+    static RE::Actor* FindLockTarget(RE::PlayerCharacter* player, float heading);
+    static RE::Actor* UpdateLock(RE::PlayerCharacter* player, bool pressed, float heading);
     static void PlayAction(RE::PlayerCharacter* player, const ErOutput& out);
     static float CameraHeading(RE::PlayerCharacter* player);
 
@@ -43,5 +46,6 @@ private:
     static inline bool iframes = false;
     static inline bool blocking = false;
     static inline bool heldMovement = false;
+    static inline RE::ActorHandle lockTarget;
     static inline ErState lastState = ER_STATE_GROUND;
 };

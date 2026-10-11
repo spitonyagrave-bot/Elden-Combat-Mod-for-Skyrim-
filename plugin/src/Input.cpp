@@ -44,6 +44,9 @@ ErInput Input::Take(float cameraHeading)
     out.heavy = heavy.Take();
     out.guard = guard.Take();
     out.walk = walk;
+    out.crouch = crouchPressed;
+    out.lock = lockPressed;
+    crouchPressed = false;
     return out;
 }
 
@@ -79,14 +82,23 @@ RE::BSEventNotifyControl Input::ProcessEvent(RE::InputEvent* const* a_event, RE:
             right = down;
         } else if (user == userEvents->activate && button->IsDown()) {
             activatePressed = true;
+        } else if (user == userEvents->sneak && button->IsDown()) {
+            // Sneak still goes to Skyrim; the core crouches along with it.
+            crouchPressed = true;
         }
 
         // Our own keys, by scan code; mouse buttons are offset by 256.
         std::uint32_t code = button->GetIDCode();
         if (button->GetDevice() == RE::INPUT_DEVICE::kMouse) {
             code += 256;
+        } else if (button->GetDevice() == RE::INPUT_DEVICE::kGamepad) {
+            // Only lock-on so far (R3, as in Elden Ring); TODO: the rest.
+            if (code == settings.lockPad && button->IsDown()) {
+                lockPressed = true;
+            }
+            continue;
         } else if (button->GetDevice() != RE::INPUT_DEVICE::kKeyboard) {
-            continue;  // TODO: gamepad bindings.
+            continue;
         }
 
         if (code == settings.toggleKey) {
@@ -109,6 +121,8 @@ RE::BSEventNotifyControl Input::ProcessEvent(RE::InputEvent* const* a_event, RE:
             (heavyModifierHeld || heavy.held ? heavy : light).Set(down);
         } else if (code == settings.guardKey) {
             guard.Set(down);
+        } else if (code == settings.lockKey && button->IsDown()) {
+            lockPressed = true;
         }
     }
     return RE::BSEventNotifyControl::kContinue;

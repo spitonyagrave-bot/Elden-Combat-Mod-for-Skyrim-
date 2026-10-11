@@ -99,20 +99,26 @@ void Bridge::Tick(RE::PlayerCharacter* player, float delta)
         combat = er_create(ToEr(player->GetPosition()));
     }
 
-    const ErInput controls = input->Take(CameraHeading(player));
+    const float cameraHeading = CameraHeading(player);
+    const ErInput controls = input->Take(cameraHeading);
+    RE::Actor* target = UpdateLock(player, controls.lock != 0, cameraHeading);
     ErWorld world{};
     world.position = ToEr(player->GetPosition());
     // TODO: ray cast for the ground under the player. Standing on it is the
     // common case, and Skyrim's controller keeps the player on the floor.
     world.ground_z = player->GetPosition().z;
     world.in_combat = player->IsInCombat();
-    // TODO: take the lock-on target from True Directional Movement's API.
-    world.has_target = 0;
+    // Our own lock-on (TDM's is switched off in Elden Ring mode).
+    world.has_target = target != nullptr;
+    if (target) {
+        world.target = ToEr(target->GetPosition());
+    }
     // On the ground Skyrim (or TDM) turns the player and the core follows.
-    // During a roll, attack or jump the core owns the facing: an unlocked
-    // roll turns toward the stick and rolls straight ahead, as in Elden Ring.
+    // During a roll, attack or jump, and whenever locked on, the core owns
+    // the facing: an unlocked roll turns toward the stick and rolls straight
+    // ahead, a locked-on one squares up to the target, as in Elden Ring.
     world.heading = player->GetAngleZ();
-    world.follow_heading = lastState == ER_STATE_GROUND;
+    world.follow_heading = lastState == ER_STATE_GROUND && !target;
 
     ErOutput out{};
     er_update(combat, delta, &controls, &world, &out);
@@ -120,11 +126,14 @@ void Bridge::Tick(RE::PlayerCharacter* player, float delta)
     lock.unlock();
     const bool posing = PoseDriver::Active();
     const bool acting = out.state != ER_STATE_GROUND && out.state != ER_STATE_DEAD;
-    if (acting) {
+    const bool ownYaw = acting || (target && out.state != ER_STATE_DEAD);
+    if (ownYaw) {
         player->SetRotationZ(out.heading);
     }
-    // TDM keeps its hands off the yaw while the core turns the player.
-    Integrations::Update(acting, out.heading, false, nullptr);
+    // TDM keeps its hands off the yaw while the core turns the player, and
+    // its directional movement pauses while locked on: Elden Ring strafes
+    // round the target, facing it.
+    Integrations::Update(ownYaw, out.heading, target != nullptr, target);
     if (posing) {
         ApplyRootMotion(player, world, out, acting);
     } else if (heldMovement) {
@@ -191,6 +200,13 @@ void Bridge::SetCombatMode(bool on)
         controls->sprintHandler->SetInputEventHandlingEnabled(!on);
         controls->jumpHandler->SetInputEventHandlingEnabled(!on);
         controls->attackBlockHandler->SetInputEventHandlingEnabled(!on);
+        // R3 is lock-on in Elden Ring mode, not the first-person toggle (and
+        // first person would end Elden Ring combat anyway).
+        controls->togglePOVHandler->SetInputEventHandlingEnabled(!on);
+    }
+    if (!on && lockTarget) {
+        lockTarget = RE::ActorHandle();
+        logger::info("Lock-on released (combat mode off)");
     }
     if (!on && combat) {
         {
@@ -352,6 +368,83 @@ void Bridge::CoreHits(RE::PlayerCharacter* player, const ErOutput& out)
         // One target per swing, as the core marks the swing landed.
         break;
     }
+}
+
+RE::Actor* Bridge::FindLockTarget(RE::PlayerCharacter* player, float heading)
+{
+    auto* lists = RE::ProcessLists::GetSingleton();
+    if (!lists) {
+        return nullptr;
+    }
+    const auto me = player->GetPosition();
+    const float range = Settings::Get().lockRange * 70.0f;
+    const RE::NiPoint3 forward(std::sin(heading), std::cos(heading), 0.0f);
+    RE::Actor* best = nullptr;
+    float bestScore = 0.0f;
+    for (auto& handle : lists->highActorHandles) {
+        auto ptr = handle.get();
+        auto* actor = ptr.get();
+        if (!actor || actor == player || actor->IsDead() || !actor->Get3D()) {
+            continue;
+        }
+        RE::NiPoint3 to = actor->GetPosition() - me;
+        to.z = 0.0f;
+        const float distance = to.Length();
+        if (distance > range || distance < 1.0f) {
+            continue;
+        }
+        const float facing = (to.x * forward.x + to.y * forward.y) / distance;  // cos of the angle off the view
+        // In front of the camera, within about 60 degrees, nearest the middle
+        // and then the closest; enemies first.
+        if (facing < 0.5f) {
+            continue;
+        }
+        float score = facing * 2.0f + (1.0f - distance / range);
+        if (actor->IsHostileToActor(player)) {
+            score += 1.0f;
+        }
+        if (!best || score > bestScore) {
+            best = actor;
+            bestScore = score;
+        }
+    }
+    return best;
+}
+
+RE::Actor* Bridge::UpdateLock(RE::PlayerCharacter* player, bool pressed, float heading)
+{
+    RE::Actor* target = nullptr;
+    if (lockTarget) {
+        auto ptr = lockTarget.get();
+        target = ptr.get();
+        const char* lost = nullptr;
+        if (!target || !target->Get3D()) {
+            lost = "target gone";
+        } else if (target->IsDead()) {
+            lost = "target dead";
+        } else if (target->GetPosition().GetDistance(player->GetPosition()) > Settings::Get().lockBreakRange * 70.0f) {
+            lost = "out of range";
+        }
+        if (lost) {
+            logger::info("Lock-on lost: {}", lost);
+            lockTarget = RE::ActorHandle();
+            target = nullptr;
+        }
+    }
+    if (pressed) {
+        if (target) {
+            logger::info("Lock-on released");
+            lockTarget = RE::ActorHandle();
+            target = nullptr;
+        } else if (auto* found = FindLockTarget(player, heading)) {
+            lockTarget = found->GetHandle();
+            target = found;
+            logger::info("Locked on to {}", found->GetName());
+        } else {
+            logger::info("Lock-on: nothing to lock on to");
+        }
+    }
+    return target;
 }
 
 float Bridge::CameraHeading(RE::PlayerCharacter* player)

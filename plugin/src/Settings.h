@@ -14,6 +14,8 @@ struct Settings
     std::uint32_t guardKey = 257;       // Right mouse: guard, or left-hand attack
     std::uint32_t heavyModifier = 0x2A; // Left Shift + light = heavy
     std::uint32_t walkKey = 0x3A;       // Caps Lock
+    std::uint32_t lockKey = 258;        // Middle mouse: lock on / off, as in Elden Ring
+    std::uint32_t lockPad = 0x0080;     // Gamepad R3 (XInput right thumb)
 
     // Skyrim animation event sent when each kind of action starts. Empty sends
     // nothing. Directional actions try "<event><Dir>" first (Forward, Back,
@@ -38,6 +40,10 @@ struct Settings
     // 0: after the player's update.
     bool poseDriver = true;
     std::int32_t poseHook = 1;
+
+    // [LockOn], metres.
+    float lockRange = 15.0f;
+    float lockBreakRange = 22.0f;
 
     static Settings& Get();
     void Load();

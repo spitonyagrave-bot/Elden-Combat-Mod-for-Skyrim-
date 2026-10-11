@@ -64,6 +64,8 @@ void Settings::Load()
     guardKey = ReadKey(L"Guard", guardKey);
     heavyModifier = ReadKey(L"HeavyModifier", heavyModifier);
     walkKey = ReadKey(L"Walk", walkKey);
+    lockKey = ReadKey(L"LockOn", lockKey);
+    lockPad = ReadKey(L"LockOnGamepad", lockPad);
 
     // Defaults drive the animations Gate to Sovngarde already has: TK Dodge
     // for rolls, and the vanilla attack events that MCO/ADXP and BFCO answer.
@@ -80,6 +82,7 @@ void Settings::Load()
     events[ER_ACTION_ROLL_ATTACK] = ReadEvent(L"RollAttack", "attackStart");
     events[ER_ACTION_BACKSTEP_ATTACK] = ReadEvent(L"BackstepAttack", "attackStart");
     events[ER_ACTION_CROUCH_ATTACK] = ReadEvent(L"CrouchAttack", "attackStart");
+    events[ER_ACTION_JUMP_ATTACK_LAND] = ReadEvent(L"JumpAttackLand", "attackPowerStartInPlace");
     events[ER_ACTION_GUARD_COUNTER] = ReadEvent(L"GuardCounter", "attackPowerStartInPlace");
     events[ER_ACTION_LEFT_ATTACK] = ReadEvent(L"LeftAttack", "attackStartLeftHand");
     events[ER_ACTION_HURT] = ReadEvent(L"Hurt", "");
@@ -90,6 +93,8 @@ void Settings::Load()
     poseHook = static_cast<std::int32_t>(GetPrivateProfileIntW(L"Pose", L"Hook", 1, kPath));
 
     coreHitDetection = GetPrivateProfileIntW(L"General", L"CoreHitDetection", 0, kPath) != 0;
+    lockRange = ReadFloat(L"LockOn", L"Range", lockRange);
+    lockBreakRange = ReadFloat(L"LockOn", L"BreakRange", lockBreakRange);
     rootMotion = GetPrivateProfileIntW(L"Pose", L"RootMotion", 1, kPath) != 0;
     damageScale = ReadFloat(L"Pose", L"DamageScale", damageScale);
     hitShake = ReadFloat(L"Pose", L"HitShake", hitShake);
