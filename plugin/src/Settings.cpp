@@ -66,6 +66,10 @@ void Settings::Load()
     walkKey = ReadKey(L"Walk", walkKey);
     lockKey = ReadKey(L"LockOn", lockKey);
     lockPad = ReadKey(L"LockOnGamepad", lockPad);
+    padDodge = ReadKey(L"PadDodge", padDodge);
+    padLight = ReadKey(L"PadLight", padLight);
+    padHeavy = ReadKey(L"PadHeavy", padHeavy);
+    padGuard = ReadKey(L"PadGuard", padGuard);
 
     // Defaults drive the animations Gate to Sovngarde already has: TK Dodge
     // for rolls, and the vanilla attack events that MCO/ADXP and BFCO answer.
@@ -100,12 +104,16 @@ void Settings::Load()
     hitShake = ReadFloat(L"Pose", L"HitShake", hitShake);
     hitPadding = ReadFloat(L"Pose", L"HitPadding", hitPadding);
     hitSound = ReadString(L"Pose", L"HitSound", "");
+    ownMovement = GetPrivateProfileIntW(L"Movement", L"Enabled", 1, kPath) != 0;
+    lockCameraSpeed = ReadFloat(L"Movement", L"LockCameraSpeed", lockCameraSpeed);
+    padLookSmoothing = ReadFloat(L"Movement", L"PadLookSmoothing", padLookSmoothing);
+    autoTwoHand = GetPrivateProfileIntW(L"Weapons", L"AutoTwoHand", 1, kPath) != 0;
     {
         auto lower = [](std::string v) {
             std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
             return v;
         };
-        rollsSkyrim = lower(ReadString(L"Pose", L"Rolls", "TKDodge")) != "er";
+        rollsSkyrim = lower(ReadString(L"Pose", L"Rolls", "ER")) != "er";
         jumpsSkyrim = lower(ReadString(L"Pose", L"Jumps", "Skyrim")) != "er";
     }
 }

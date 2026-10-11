@@ -33,6 +33,8 @@ private:
     static void SetBlock(RE::PlayerCharacter* player, bool on);
     static void ApplyRootMotion(RE::PlayerCharacter* player, const ErWorld& world, const ErOutput& out, bool acting);
     static void ReleaseMovement();
+    // Elden Ring's running: Skyrim's movement input from the core's step.
+    static void Walk(RE::PlayerCharacter* player, const ErWorld& world, const ErOutput& out, float delta);
     // The part of a root-motion step Skyrim's collision lets through.
     static RE::NiPoint3 Collide(RE::PlayerCharacter* player, RE::NiPoint3 move);
     static void CoreHits(RE::PlayerCharacter* player, const ErOutput& out);
@@ -40,7 +42,6 @@ private:
     static RE::Actor* FindLockTarget(RE::PlayerCharacter* player, float heading);
     static RE::Actor* UpdateLock(RE::PlayerCharacter* player, bool pressed, float heading);
     static void PlayAction(RE::PlayerCharacter* player, const ErOutput& out);
-    static float CameraHeading(RE::PlayerCharacter* player);
 
     static inline ErCombat* combat = nullptr;
     static inline bool combatMode = false;
@@ -53,6 +54,8 @@ private:
     static inline bool iframes = false;
     static inline bool blocking = false;
     static inline bool heldMovement = false;
+    static inline bool walkValid = false;
+    static inline RE::NiPoint3 walkEnd;
     static inline RE::ActorHandle lockTarget;
     static inline ErState lastState = ER_STATE_GROUND;
 };

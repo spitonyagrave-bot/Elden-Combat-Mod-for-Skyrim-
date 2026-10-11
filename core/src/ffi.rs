@@ -642,6 +642,19 @@ pub unsafe extern "C" fn er_confirm_hit(combat: *mut ErCombat) {
     }
 }
 
+/// Speed of a gait in Skyrim units per second, from the loaded action table:
+/// 0 walk, 1 run, 2 sprint (anything else: run).
+#[no_mangle]
+pub extern "C" fn er_gait_speed(gait: u32) -> f32 {
+    use crate::sim::data::{run_speed, sprint_speed, walk_speed};
+    let metres = match gait {
+        0 => walk_speed(),
+        2 => sprint_speed(),
+        _ => run_speed(),
+    };
+    metres * UNITS_PER_METRE
+}
+
 // --- Weapons -------------------------------------------------------------------
 
 /// Index of the Elden Ring weapon class called `name` (e.g. "Longsword",

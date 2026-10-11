@@ -21,6 +21,12 @@ public:
     // Lock-on was pressed since the last call (middle mouse / R3 by default).
     bool lockPressed = false;
 
+    // The gamepad button in this event is one the core uses while Elden Ring
+    // combat runs (Skyrim's own use of it is held back then).
+    bool OwnsPadButton(RE::InputEvent* event) const;
+    // Set by the bridge while Elden Ring combat runs.
+    std::atomic<bool> padOwned = false;
+
     // Elden Ring mode, flipped by the toggle key. Off at startup.
     bool enabled = false;
     bool toggled = false;  // flipped since the bridge last looked

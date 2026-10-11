@@ -9,6 +9,7 @@
 #include <cctype>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <mutex>
 #include <string>

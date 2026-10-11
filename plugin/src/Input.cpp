@@ -53,6 +53,20 @@ ErInput Input::Take(float cameraHeading)
     return out;
 }
 
+bool Input::OwnsPadButton(RE::InputEvent* event) const
+{
+    if (!padOwned || !event || event->GetDevice() != RE::INPUT_DEVICE::kGamepad) {
+        return false;
+    }
+    auto* button = event->AsButtonEvent();
+    if (!button) {
+        return false;
+    }
+    const auto& s = Settings::Get();
+    const auto code = button->GetIDCode();
+    return code == s.padDodge || code == s.padLight || code == s.padHeavy || code == s.padGuard || code == s.lockPad;
+}
+
 RE::BSEventNotifyControl Input::ProcessEvent(RE::InputEvent* const* a_event, RE::BSTEventSource<RE::InputEvent*>*)
 {
     if (!a_event) {
@@ -95,9 +109,22 @@ RE::BSEventNotifyControl Input::ProcessEvent(RE::InputEvent* const* a_event, RE:
         if (button->GetDevice() == RE::INPUT_DEVICE::kMouse) {
             code += 256;
         } else if (button->GetDevice() == RE::INPUT_DEVICE::kGamepad) {
-            // Only lock-on so far (R3, as in Elden Ring); TODO: the rest.
-            if (code == settings.lockPad && button->IsDown()) {
+            // Elden Ring's layout: B roll (tap) / sprint (hold), RB attack,
+            // RT heavy (hold to charge), LB guard, R3 lock-on. Jump follows
+            // Skyrim's own Jump button, so Skyrim's jump (and SkyParkour's
+            // climbing) and the core's jump stay on one button.
+            if (code == settings.padDodge) {
+                dodge.Set(down);
+            } else if (code == settings.padLight) {
+                light.Set(down);
+            } else if (code == settings.padHeavy) {
+                heavy.Set(down);
+            } else if (code == settings.padGuard) {
+                guard.Set(down);
+            } else if (code == settings.lockPad && button->IsDown()) {
                 lockPressed = true;
+            } else if (user == userEvents->jump) {
+                jump.Set(down);
             }
             continue;
         } else if (button->GetDevice() != RE::INPUT_DEVICE::kKeyboard) {

@@ -161,6 +161,9 @@ void er_update(ErCombat* combat, float dt, const ErInput* input, const ErWorld* 
 ErHitResult er_receive_hit(ErCombat* combat, ErVec3 from, uint8_t low, ErHurt hurt);
 void er_confirm_hit(ErCombat* combat);
 
+/* Speed of a gait in Skyrim units per second: 0 walk, 1 run, 2 sprint. */
+float er_gait_speed(uint32_t gait);
+
 /* Index of an Elden Ring weapon class by name ("Longsword", "Shield",
  * "Fist", ...) in the loaded action table, or -1. */
 int32_t er_weapon_index(const char* name);

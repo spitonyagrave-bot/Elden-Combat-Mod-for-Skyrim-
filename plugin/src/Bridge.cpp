@@ -3,6 +3,7 @@
 #include "Hits.h"
 #include "Input.h"
 #include "Integrations.h"
+#include "Movement.h"
 #include "PoseDriver.h"
 #include "Settings.h"
 #include "Weapons.h"
@@ -111,7 +112,7 @@ void Bridge::Tick(RE::PlayerCharacter* player, float delta)
         logger::info("Equipment {} Elden Ring combat", loadout.supported ? "supports" : "does not support");
     }
     const bool want = input->enabled && loadout.supported && state && state->IsWeaponDrawn() && !MenuUp() &&
-                      !player->IsDead() && !RE::PlayerCamera::GetSingleton()->IsInFirstPerson();
+                      !player->IsDead() && !player->IsOnMount() && !RE::PlayerCamera::GetSingleton()->IsInFirstPerson();
     if (want != combatMode) {
         SetCombatMode(want);
     }
@@ -129,7 +130,8 @@ void Bridge::Tick(RE::PlayerCharacter* player, float delta)
     }
     Weapons::Apply(combat, loadout);
 
-    const float cameraHeading = CameraHeading(player);
+    const float cameraHeading = Movement::CameraHeading(player);
+    const bool ownMovement = Movement::Active();
     const ErInput controls = input->Take(cameraHeading);
     RE::Actor* target = UpdateLock(player, controls.lock != 0, cameraHeading);
     ErWorld world{};
@@ -147,8 +149,10 @@ void Bridge::Tick(RE::PlayerCharacter* player, float delta)
     // During a roll, attack or jump, and whenever locked on, the core owns
     // the facing: an unlocked roll turns toward the stick and rolls straight
     // ahead, a locked-on one squares up to the target, as in Elden Ring.
+    // With [Movement] Enabled=1 the core always owns the facing: it turns
+    // the player toward the stick at Elden Ring's turn rates.
     world.heading = player->GetAngleZ();
-    world.follow_heading = lastState == ER_STATE_GROUND && !target;
+    world.follow_heading = !ownMovement && lastState == ER_STATE_GROUND && !target;
 
     ErOutput out{};
     er_update(combat, delta, &controls, &world, &out);
@@ -166,18 +170,25 @@ void Bridge::Tick(RE::PlayerCharacter* player, float delta)
     }
     const bool posing = PoseDriver::Active();
     const bool acting = out.state != ER_STATE_GROUND && out.state != ER_STATE_DEAD;
-    const bool ownYaw = acting || (target && out.state != ER_STATE_DEAD);
+    const bool ownYaw = out.state != ER_STATE_DEAD && (ownMovement || acting || target);
     if (ownYaw) {
-        player->SetRotationZ(out.heading);
+        Movement::Turn(player, out.heading);
     }
     // TDM keeps its hands off the yaw while the core turns the player, and
-    // its directional movement pauses while locked on: Elden Ring strafes
-    // round the target, facing it.
-    Integrations::Update(ownYaw, out.heading, target != nullptr, target);
+    // its directional movement pauses while ours runs (and while locked on:
+    // Elden Ring strafes round the target, facing it).
+    Integrations::Update(ownYaw, out.heading, ownMovement || target != nullptr, target);
     if (posing) {
         ApplyRootMotion(player, world, out, acting);
     } else if (heldMovement) {
         ReleaseMovement();
+    }
+    if (ownMovement) {
+        Walk(player, world, out, delta);
+        if (target) {
+            const auto to = target->GetPosition() - player->GetPosition();
+            Movement::SteerCamera(player, std::atan2(to.x, to.y), delta);
+        }
     }
     if (out.state != lastState) {
         logger::info("Core state {} -> {} (action {} \"{}\", stamina {:.2f})", static_cast<std::uint32_t>(lastState),
@@ -233,6 +244,9 @@ void Bridge::SetCombatMode(bool on)
 {
     combatMode = on;
     Integrations::SetErMode(on);
+    Movement::SetActive(on && Settings::Get().ownMovement);
+    Input::Get()->padOwned = on;
+    walkValid = false;
     if (!on && heldMovement) {
         ReleaseMovement();
     }
@@ -446,6 +460,55 @@ RE::NiPoint3 Bridge::Collide(RE::PlayerCharacter* player, RE::NiPoint3 move)
     return move;
 }
 
+void Bridge::Walk(RE::PlayerCharacter* player, const ErWorld& world, const ErOutput& out, float delta)
+{
+    if (heldMovement) {
+        // Root motion moves the player during this action.
+        Movement::SetMove(0.0f, 0.0f);
+        walkValid = false;
+        return;
+    }
+    // Where the core ran this frame, in the player's own frame (Skyrim's
+    // heading: 0 along +Y, turning clockwise toward +X).
+    const float dx = out.position.x - world.position.x;
+    const float dy = out.position.y - world.position.y;
+    const float step = std::sqrt(dx * dx + dy * dy);
+    if (out.speed < 5.0f || step < 1e-3f || out.state == ER_STATE_ACTION) {
+        Movement::SetMove(0.0f, 0.0f);
+        walkValid = false;
+        return;
+    }
+    const float h = out.heading;
+    const float fx = std::sin(h), fy = std::cos(h);
+    const float wx = dx / step, wy = dy / step;
+    const float forward = wx * fx + wy * fy;
+    const float right = wx * fy - wy * fx;
+    // Skyrim walks below about half input and runs above; the core's speed
+    // over its run speed picks the gait.
+    const float run = std::max(er_gait_speed(1), 1.0f);
+    const float amount = std::clamp(out.speed / run, 0.2f, 1.0f);
+    Movement::SetMove(right * amount, forward * amount);
+
+    // Skyrim's run is all it has with the sprint handler held back; the rest
+    // of Elden Ring's sprint speed is added along the run, through the same
+    // collision test as root motion.
+    const auto now = player->GetPosition();
+    if (out.sprinting && out.state == ER_STATE_GROUND && walkValid && delta > 0.0f) {
+        const float ownX = now.x - walkEnd.x, ownY = now.y - walkEnd.y;
+        const float skyrimStep = std::sqrt(ownX * ownX + ownY * ownY);
+        const float want = out.speed * delta;
+        const float extra = std::clamp(want - skyrimStep, 0.0f, want * 0.6f);
+        if (extra > 0.01f) {
+            const RE::NiPoint3 move = Collide(player, RE::NiPoint3(wx * extra, wy * extra, 0.0f));
+            if (move.x * move.x + move.y * move.y > 0.0001f) {
+                player->SetPosition(RE::NiPoint3(now.x + move.x, now.y + move.y, now.z), true);
+            }
+        }
+    }
+    walkEnd = player->GetPosition();
+    walkValid = true;
+}
+
 void Bridge::ReleaseMovement()
 {
     heldMovement = false;
@@ -588,17 +651,4 @@ RE::Actor* Bridge::UpdateLock(RE::PlayerCharacter* player, bool pressed, float h
         }
     }
     return target;
-}
-
-float Bridge::CameraHeading(RE::PlayerCharacter* player)
-{
-    float heading = player->GetAngleZ();
-    auto* camera = RE::PlayerCamera::GetSingleton();
-    if (camera && camera->currentState && camera->currentState->id == RE::CameraState::kThirdPerson) {
-        auto* third = static_cast<RE::ThirdPersonState*>(camera->currentState.get());
-        if (third->freeRotationEnabled) {
-            heading += third->freeRotation.x;
-        }
-    }
-    return heading;
 }

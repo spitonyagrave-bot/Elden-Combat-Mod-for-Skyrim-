@@ -16,6 +16,11 @@ struct Settings
     std::uint32_t walkKey = 0x3A;       // Caps Lock
     std::uint32_t lockKey = 258;        // Middle mouse: lock on / off, as in Elden Ring
     std::uint32_t lockPad = 0x0080;     // Gamepad R3 (XInput right thumb)
+    // Gamepad buttons (Skyrim's XInput codes), Elden Ring's layout.
+    std::uint32_t padDodge = 0x2000;    // B: tap to roll, hold to sprint
+    std::uint32_t padLight = 0x0200;    // RB: attack
+    std::uint32_t padHeavy = 0x000A;    // RT: heavy attack, hold to charge
+    std::uint32_t padGuard = 0x0100;    // LB: guard, or the left-hand attack
 
     // Skyrim animation event sent when each kind of action starts. Empty sends
     // nothing. Directional actions try "<event><Dir>" first (Forward, Back,
@@ -48,6 +53,18 @@ struct Settings
     // which really leaves the ground) or ER.
     bool rollsSkyrim = true;
     bool jumpsSkyrim = true;
+
+    // [Movement]: Elden Ring owns running, turning and the camera (free
+    // camera, 360-degree movement). LockCameraSpeed: how fast the camera
+    // glides onto a lock-on target (per second). PadLookSmoothing: seconds
+    // the right stick's look takes to ease in (0 = raw).
+    bool ownMovement = true;
+    float lockCameraSpeed = 6.0f;
+    float padLookSmoothing = 0.08f;
+
+    // [Weapons] AutoTwoHand: a one-handed weapon with an empty left hand is
+    // held in both hands (Elden Ring's two-handed stance, attacks and guard).
+    bool autoTwoHand = true;
 
     // [LockOn], metres.
     float lockRange = 15.0f;

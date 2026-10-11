@@ -2,6 +2,7 @@
 #include "Hits.h"
 #include "Input.h"
 #include "Integrations.h"
+#include "Movement.h"
 #include "PoseDriver.h"
 #include "Settings.h"
 #include "Win32.h"
@@ -91,6 +92,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse)
     Bridge::Install();
     Hits::Install();
     PoseDriver::Install();
+    Movement::Install();
     SKSE::GetMessagingInterface()->RegisterListener(OnMessage);
     return true;
 }

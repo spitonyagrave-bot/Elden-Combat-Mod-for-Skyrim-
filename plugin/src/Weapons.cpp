@@ -1,5 +1,7 @@
 #include "Weapons.h"
 
+#include "Settings.h"
+
 namespace
 {
     // Keyword -> Elden Ring class. Checked in order before the vanilla type.
@@ -109,6 +111,13 @@ Weapons::Loadout Weapons::Read(RE::PlayerCharacter* player)
     if (rightForm && rightForm->IsWeapon()) {
         const auto type = rightForm->As<RE::TESObjectWEAP>()->GetWeaponType();
         out.twoHanded = type == RE::WEAPON_TYPE::kTwoHandSword || type == RE::WEAPON_TYPE::kTwoHandAxe;
+    }
+    // A one-handed weapon with nothing in the left hand: Elden Ring's
+    // two-handed stance, so the guard and the attacks use both hands instead
+    // of an empty fist.
+    if (!out.twoHanded && !leftForm && rightForm && rightForm->IsWeapon() && !out.right.empty() &&
+        out.right != "Fist"sv && Settings::Get().autoTwoHand) {
+        out.twoHanded = true;
     }
     // A two-hander fills both hands: Skyrim reports it in each.
     if (out.twoHanded) {
