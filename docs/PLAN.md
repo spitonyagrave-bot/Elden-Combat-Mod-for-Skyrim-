@@ -142,3 +142,11 @@ Neither file is ever committed or uploaded, so CI keeps building against the stu
 5. Weapon mapping from the table above, including two-handing and power stance.
 6. Hits both ways through the core, with damage through Skyrim.
 7. Lock-on target fed to SmoothCam and TrueHUD.
+
+## 8. Features after the takeover (Joel, 2026-10-11)
+
+- **Enemies fight the Elden Ring way too.** Humanoid NPCs reuse the player movesets (same skeleton) with ER timings, rolls and posture. Creatures keep Skyrim animations but get posture and stagger.
+- **Posture break like Sekiro.** When posture breaks: guard break plus the Elden Ring critical stab. At zero HP: Skyrim killmove.
+- **Ashes of War.** Each weapon class gets a default skill on one key, paid with Magicka as FP. A lesser power or MCM page swaps the skill.
+- **Boss health bar.** Bosses and dragons get an ER-style bar (TrueHUD boss bar). Music already comes from the modlist.
+- Not now: mounted combat. Flasks: Joel already has a mod for that.
