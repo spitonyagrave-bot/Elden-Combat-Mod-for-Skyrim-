@@ -56,6 +56,31 @@ namespace
         return m;
     }
 
+    // Puts the pelvis at `target` (root-local) by moving its parent, NPC COM.
+    // On Skyrim's skeleton the spine hangs off COM, not off the pelvis:
+    // moving the pelvis alone lowered or raised only the legs (a jump or a
+    // roll moved "the lower half"), so the whole body goes with COM.
+    void PlacePelvis(RE::NiAVObject* pelvis, RE::NiAVObject* root, const ErXform& target)
+    {
+        const RE::NiPoint3 want(target.pos[0], target.pos[1], target.pos[2]);
+        auto* com = pelvis->parent;
+        if (!com || com == root) {
+            pelvis->local.translate = want;  // the pelvis hangs off the root
+            return;
+        }
+        RE::NiTransform above;
+        if (!RootLocal(com->parent, root, above)) {
+            if (com->parent != root) {
+                return;
+            }
+            above = RE::NiTransform();
+        }
+        const RE::NiTransform comNow = above * com->local;
+        // Where COM must be so the pelvis, at its own offset under COM, lands on `want`.
+        const RE::NiPoint3 offset = comNow.rotate * (pelvis->local.translate * comNow.scale);
+        com->local.translate = above.Invert() * (want - offset);
+    }
+
     const char* LoadText(std::int32_t result)
     {
         switch (result) {
@@ -267,6 +292,9 @@ void PoseDriver::Apply(RE::PlayerCharacter* player, float delta)
         if (!drive[i] || !node || !node->parent) {
             continue;
         }
+        if (i == 0) {
+            PlacePelvis(node, root, out[0]);
+        }
         RE::NiTransform parent;
         if (!RootLocal(node->parent, root, parent)) {
             // The parent is the root itself.
@@ -276,12 +304,10 @@ void PoseDriver::Apply(RE::PlayerCharacter* player, float delta)
             parent = RE::NiTransform();
         }
         node->local.rotate = parent.rotate.Transpose() * Rotation(out[i]);
-        if (i == 0) {
-            const RE::NiPoint3 target(out[i].pos[0], out[i].pos[1], out[i].pos[2]);
-            node->local.translate = parent.Invert() * target;
-        }
         if (!top) {
-            top = node;
+            // Update from above the pelvis: its parent (NPC COM) carries the
+            // spine as well as the legs.
+            top = i == 0 && node->parent != root ? node->parent : node;
         }
     }
     // Bring the world transforms (and everything hanging off the bones:
