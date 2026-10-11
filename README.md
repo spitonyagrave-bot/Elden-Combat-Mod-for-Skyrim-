@@ -17,6 +17,15 @@ The combat logic is the engine-free simulation from
   Skyrim's own sprint, jump and attack/block handlers are paused for that time.
   Each action the core starts plays through the animation event set in
   `ERCombat.ini`. By default those events drive TK Dodge and MCO/ADXP.
+- **Your weapons pick the Elden Ring moveset.** Sword → Longsword, greatsword →
+  Claymore, dagger → Dagger, war axe → Battle Axe, battleaxe → Greataxe, mace →
+  Club, warhammer → Great Hammer, fists → Fist; shield and torch in the left
+  hand. Modded types are found by keyword first: WeapTypeKatana → Uchigatana,
+  WeapTypeRapier → Rapier, WeapTypeWhip → Whip, WeapTypeQtrStaff → Twinblade,
+  WeapTypeSpear → Short Spear, WeapTypePike → Great Spear, WeapTypeHalberd →
+  Halberd, WeapTypeClaw → Claw, WeapTypeScythe → Reaper. The same class in both
+  hands is a power stance. **Bows, crossbows, magic staffs and spells stay
+  Skyrim's**: with one in either hand, combat mode stays off.
 - **Activate, movement, shouts, sneaking and menus always stay with Skyrim**, so
   doors, loot and dialogue keep working mid-fight.
 - **I-frames come from the core's real roll timings.** They're set through the

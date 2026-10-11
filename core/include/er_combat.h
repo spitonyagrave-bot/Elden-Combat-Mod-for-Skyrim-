@@ -160,6 +160,13 @@ void er_update(ErCombat* combat, float dt, const ErInput* input, const ErWorld* 
 ErHitResult er_receive_hit(ErCombat* combat, ErVec3 from, uint8_t low, ErHurt hurt);
 void er_confirm_hit(ErCombat* combat);
 
+/* Index of an Elden Ring weapon class by name ("Longsword", "Shield",
+ * "Fist", ...) in the loaded action table, or -1. */
+int32_t er_weapon_index(const char* name);
+/* Puts these classes in the player's hands (-1 keeps what is there);
+ * two_handed: the right-hand weapon in both hands. 1 if anything changed. */
+uint8_t er_set_armaments(ErCombat* combat, int32_t right, int32_t left, uint8_t two_handed);
+
 /* Loads ERCombat.eranims (upstream's player_anims.bin). Once; an
  * ErLoadResult (NOT_ERDATA: not an animation file; LAYOUT: a joint the
  * retarget needs is missing). */

@@ -4,6 +4,7 @@
 #include "Integrations.h"
 #include "PoseDriver.h"
 #include "Settings.h"
+#include "Weapons.h"
 
 static_assert(sizeof(ErInput) == 32);
 static_assert(sizeof(ErWorld) == 44);
@@ -82,8 +83,14 @@ void Bridge::Tick(RE::PlayerCharacter* player, float delta)
     }
 
     auto* state = player->AsActorState();
-    const bool want = input->enabled && state && state->IsWeaponDrawn() && !MenuUp() && !player->IsDead() &&
-                      !RE::PlayerCamera::GetSingleton()->IsInFirstPerson();
+    // Bows, crossbows, magic staffs and spells stay Skyrim's.
+    const Weapons::Loadout loadout = Weapons::Read(player);
+    if (loadout.supported != lastSupported) {
+        lastSupported = loadout.supported;
+        logger::info("Equipment {} Elden Ring combat", loadout.supported ? "supports" : "does not support");
+    }
+    const bool want = input->enabled && loadout.supported && state && state->IsWeaponDrawn() && !MenuUp() &&
+                      !player->IsDead() && !RE::PlayerCamera::GetSingleton()->IsInFirstPerson();
     if (want != combatMode) {
         SetCombatMode(want);
     }
@@ -97,7 +104,9 @@ void Bridge::Tick(RE::PlayerCharacter* player, float delta)
     std::unique_lock lock(CoreLock());
     if (!combat) {
         combat = er_create(ToEr(player->GetPosition()));
+        Weapons::Reset();
     }
+    Weapons::Apply(combat, loadout);
 
     const float cameraHeading = CameraHeading(player);
     const ErInput controls = input->Take(cameraHeading);

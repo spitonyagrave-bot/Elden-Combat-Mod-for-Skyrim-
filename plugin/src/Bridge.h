@@ -42,6 +42,7 @@ private:
 
     static inline ErCombat* combat = nullptr;
     static inline bool combatMode = false;
+    static inline bool lastSupported = true;
     static inline std::uint32_t lastSerial = 0;
     static inline bool iframes = false;
     static inline bool blocking = false;

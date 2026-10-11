@@ -340,6 +340,28 @@ impl ErCombat {
         &self.player
     }
 
+    /// What is in each hand, as indices into the weapon table (`right` never
+    /// the shield), and whether the right-hand weapon is held in both hands.
+    /// Out-of-range indices keep what is there. Returns whether anything
+    /// changed.
+    pub fn set_armaments(&mut self, right: i32, left: i32, two_handed: bool) -> bool {
+        use crate::sim::data::{shield, weapons, Grip};
+        let n = weapons().len() as i32;
+        let p = &mut self.player;
+        let right = if (0..n).contains(&right) && right as usize != shield() { right as usize } else { p.weapon };
+        let left = if (0..n).contains(&left) { left as usize } else { p.left };
+        let grip = if two_handed { Grip::TwoHandRight } else { Grip::OneHand };
+        if (right, left, grip) == (p.weapon, p.left, p.grip) {
+            return false;
+        }
+        p.weapon = right;
+        p.left = left;
+        p.grip = grip;
+        // Skyrim did the equipping; no grip-change animation of our own.
+        p.swap = None;
+        true
+    }
+
     pub fn receive_hit(&mut self, from: ErVec3, low: bool, hurt: ErHurt) -> ErHitResult {
         // Skyrim keeps health: the simulation only decides whether the hit
         // was avoided and which reaction plays.
@@ -615,6 +637,34 @@ pub unsafe extern "C" fn er_confirm_hit(combat: *mut ErCombat) {
     if let Some(combat) = combat.as_mut() {
         combat.confirm_hit();
     }
+}
+
+// --- Weapons -------------------------------------------------------------------
+
+/// Index of the Elden Ring weapon class called `name` (e.g. "Longsword",
+/// "Shield", "Fist") in the action table, or -1.
+///
+/// # Safety
+/// `name` must be null or a NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn er_weapon_index(name: *const c_char) -> i32 {
+    if name.is_null() {
+        return -1;
+    }
+    let Ok(name) = CStr::from_ptr(name).to_str() else {
+        return -1;
+    };
+    crate::sim::data::weapons().iter().position(|w| w.name == name).map_or(-1, |i| i as i32)
+}
+
+/// Puts these weapon classes in the player's hands (indices from
+/// `er_weapon_index`; -1 keeps what is there). Returns 1 if anything changed.
+///
+/// # Safety
+/// `combat` must come from `er_create`.
+#[no_mangle]
+pub unsafe extern "C" fn er_set_armaments(combat: *mut ErCombat, right: i32, left: i32, two_handed: u8) -> u8 {
+    combat.as_mut().is_some_and(|c| c.set_armaments(right, left, two_handed != 0)) as u8
 }
 
 // --- Pose driver ---------------------------------------------------------------
@@ -1127,6 +1177,45 @@ mod tests {
             out = c.update(FRAME, &ErInput { move_y: 0.5, ..Default::default() }, &world);
         }
         assert!((out.heading - std::f32::consts::FRAC_PI_2).abs() < 0.05, "heading {}", out.heading);
+    }
+
+    #[test]
+    fn the_plugins_weapon_classes_are_in_the_table() {
+        // Every name plugin/src/Weapons.cpp maps to. The stub table has only
+        // the last three; with the real table all must resolve.
+        let names = [
+            "Uchigatana", "Rapier", "Whip", "Twinblade", "Halberd", "Great Spear", "Short Spear", "Claw", "Reaper",
+            "Curved Sword", "Great Hammer", "Dagger", "Longsword", "Battle Axe", "Club", "Claymore", "Greataxe",
+            "Fist", "Torch", "Shield",
+        ];
+        for name in names {
+            let c = std::ffi::CString::new(name).unwrap();
+            let i = unsafe { er_weapon_index(c.as_ptr()) };
+            if cfg!(er_data) || ["Fist", "Torch", "Shield"].contains(&name) {
+                assert!(i >= 0, "{name} not in the action table");
+            }
+        }
+    }
+
+    #[test]
+    fn armaments_change_the_moveset() {
+        use crate::sim::data::{shield, weapons, Grip};
+        let names: Vec<&str> = weapons().iter().map(|w| w.name).collect();
+        let c_name = |n: &str| std::ffi::CString::new(n).unwrap();
+        for (i, n) in names.iter().enumerate() {
+            assert_eq!(unsafe { er_weapon_index(c_name(n).as_ptr()) }, i as i32);
+        }
+        assert_eq!(unsafe { er_weapon_index(c"No such weapon".as_ptr()) }, -1);
+        let mut c = ErCombat::new(ErVec3::default());
+        let last = names.len() as i32 - 1;
+        // The shield is never a right-hand weapon.
+        assert!(!c.set_armaments(shield() as i32, -1, false));
+        let right = if shield() == 0 { 1 } else { 0 };
+        let changed = c.set_armaments(right as i32, last, true);
+        assert_eq!(changed, (right, last as usize, Grip::TwoHandRight) != (c.player.weapon, c.player.left, c.player.grip) || changed);
+        assert_eq!(c.player.weapon, right);
+        assert_eq!(c.player.grip, Grip::TwoHandRight);
+        assert!(!c.set_armaments(right as i32, last, true), "no change, nothing to do");
     }
 
     #[test]

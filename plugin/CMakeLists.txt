@@ -20,6 +20,7 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/Bridge.cpp
         src/Input.cpp
         src/Integrations.cpp
+        src/Weapons.cpp
         src/PoseDriver.cpp
         src/Settings.cpp
         src/Win32.cpp
