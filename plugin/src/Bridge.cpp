@@ -4,7 +4,8 @@
 #include "Settings.h"
 
 static_assert(sizeof(ErInput) == 32);
-static_assert(sizeof(ErWorld) == 36);
+static_assert(sizeof(ErWorld) == 44);
+static_assert(offsetof(ErWorld, follow_heading) == 40);
 static_assert(sizeof(ErOutput) == 220);
 static_assert(offsetof(ErOutput, sweep_a) == 88);
 
@@ -82,9 +83,23 @@ void Bridge::Tick(RE::PlayerCharacter* player, float delta)
     world.in_combat = player->IsInCombat();
     // TODO: take the lock-on target from True Directional Movement's API.
     world.has_target = 0;
+    // On the ground Skyrim (or TDM) turns the player and the core follows.
+    // During a roll, attack or jump the core owns the facing: an unlocked
+    // roll turns toward the stick and rolls straight ahead, as in Elden Ring.
+    world.heading = player->GetAngleZ();
+    world.follow_heading = lastState == ER_STATE_GROUND;
 
     ErOutput out{};
     er_update(combat, delta, &controls, &world, &out);
+    if (out.state != ER_STATE_GROUND && out.state != ER_STATE_DEAD) {
+        player->SetRotationZ(out.heading);
+    }
+    if (out.state != lastState) {
+        logger::info("Core state {} -> {} (action {} \"{}\", stamina {:.2f})", static_cast<std::uint32_t>(lastState),
+            static_cast<std::uint32_t>(out.state), static_cast<std::uint32_t>(out.action_kind),
+            static_cast<const char*>(out.action), out.stamina);
+        lastState = out.state;
+    }
 
     if (controls.dodge.pressed || controls.jump.pressed || controls.light.pressed || controls.heavy.pressed ||
         controls.guard.pressed) {
@@ -96,6 +111,14 @@ void Bridge::Tick(RE::PlayerCharacter* player, float delta)
     if (out.action_serial != lastSerial) {
         lastSerial = out.action_serial;
         PlayAction(player, out);
+    }
+
+    // Guard: raise and lower Skyrim's block, so its blocking (damage, block
+    // perks, stamina) and the list's block mods see a raised guard.
+    const bool guarding = out.guarding != 0;
+    if (guarding != blocking) {
+        blocking = guarding;
+        SetBlock(player, guarding);
     }
 
     // I-frames through the graph variables the game and MaxsuIFrame read.
@@ -129,6 +152,13 @@ void Bridge::SetCombatMode(bool on)
         er_destroy(combat);
         combat = nullptr;
         lastSerial = 0;
+        lastState = ER_STATE_GROUND;
+        if (blocking) {
+            blocking = false;
+            if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+                SetBlock(player, false);
+            }
+        }
         if (iframes) {
             iframes = false;
             if (auto* player = RE::PlayerCharacter::GetSingleton()) {
@@ -163,6 +193,16 @@ void Bridge::PlayAction(RE::PlayerCharacter* player, const ErOutput& out)
     } else {
         logger::info("Action {} ({}): no animation answered {}", static_cast<std::uint32_t>(kind), static_cast<const char*>(out.action), base);
     }
+}
+
+void Bridge::SetBlock(RE::PlayerCharacter* player, bool on)
+{
+    const auto& event = on ? Settings::Get().blockStart : Settings::Get().blockStop;
+    if (event.empty()) {
+        return;
+    }
+    const bool answered = player->NotifyAnimationGraph(event.c_str());
+    logger::info("Guard {}: {} {}", on ? "up" : "down", event, answered ? "played" : "had no animation answer");
 }
 
 float Bridge::CameraHeading(RE::PlayerCharacter* player)

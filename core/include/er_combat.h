@@ -37,6 +37,9 @@ typedef struct ErWorld {
     uint8_t has_target;
     ErVec3 target;
     uint8_t in_combat;
+    float heading;          /* the player's facing in Skyrim */
+    uint8_t follow_heading; /* Skyrim turns the player this frame: the core takes `heading`.
+                               Otherwise the core owns the facing; apply ErOutput.heading. */
 } ErWorld;
 
 typedef enum ErState : uint32_t {
@@ -80,7 +83,9 @@ typedef struct ErOutput {
     uint32_t action_dir;    /* 0 front, 1 back, 2 left, 3 right */
     uint32_t action_serial; /* +1 each time a new action starts */
     float speed;
-    uint8_t sprinting, crouching, guarding, invincible, airborne;
+    uint8_t sprinting, crouching;
+    uint8_t guarding; /* raising or holding the guard */
+    uint8_t invincible, airborne;
     uint8_t interruptible; /* Activate may go through to Skyrim */
     float stamina;         /* 0..1 */
     uint8_t hit_live;

@@ -777,7 +777,16 @@ impl Player {
             }
             self.jump_base = self.pos.y;
             self.peak = self.pos.y;
-            self.state = State::Act(a);
+            if a.f < def.total {
+                self.state = State::Act(a);
+            } else if self.pos.y - ground <= STEP_HEIGHT {
+                // An arc that never left the ground (a table without the
+                // jump's height, say) is over when its animation is: land
+                // instead of waiting forever for the rise.
+                self.land(ground, inp, true, locked);
+            } else {
+                self.state = State::Air(Air { vel: Vec3::new(step.x, 0.0, step.z) / DT, jumped: true, f: 0.0 });
+            }
             return;
         }
         let y = self.jump_base + up;
@@ -793,7 +802,7 @@ impl Player {
         }
         // Hand over to the fall with the arc's exit velocity.
         let n = def.motion.len();
-        let rise = (def.motion[n - 1][1] - def.motion[n - 2][1]) * ANIM_FPS;
+        let rise = if n >= 2 { (def.motion[n - 1][1] - def.motion[n - 2][1]) * ANIM_FPS } else { 0.0 };
         let flat = step / DT;
         self.state = State::Air(Air { vel: Vec3::new(flat.x, rise, flat.z), jumped: true, f: 0.0 });
     }

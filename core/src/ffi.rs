@@ -2,9 +2,12 @@
 //!
 //! Everything crossing this boundary is in Skyrim's space: game units
 //! (`UNITS_PER_METRE` to the metre), Z up, and heading in radians with 0
-//! facing +Y and turning clockwise toward +X. The simulation works in metres,
-//! Y up, yaw 0 facing +Z and turning toward +X, so the two yaws agree and only
-//! the axes and scale change.
+//! facing +Y and turning clockwise toward +X (+X is to the right of +Y). The
+//! simulation works in metres in Bevy's right-handed space: Y up, yaw 0 facing
+//! +Z, and +X on the character's *left*, with positive yaw turning toward +X
+//! (counter-clockwise seen from above). So Skyrim's X is the simulation's -X,
+//! and a Skyrim heading is the negated simulation yaw. Mapping X straight
+//! across would mirror the world: stick right would roll left.
 
 use std::ffi::{c_char, CStr};
 use std::path::Path;
@@ -33,14 +36,23 @@ pub struct ErVec3 {
 }
 
 impl ErVec3 {
-    fn to_sim(self) -> Vec3 {
-        Vec3::new(self.x, self.z, self.y) / UNITS_PER_METRE
+    pub(crate) fn to_sim(self) -> Vec3 {
+        Vec3::new(-self.x, self.z, self.y) / UNITS_PER_METRE
     }
 
-    fn from_sim(v: Vec3) -> Self {
+    pub(crate) fn from_sim(v: Vec3) -> Self {
         let v = v * UNITS_PER_METRE;
-        Self { x: v.x, y: v.z, z: v.y }
+        Self { x: -v.x, y: v.z, z: v.y }
     }
+}
+
+/// Skyrim heading to simulation yaw, and back (the same negation).
+pub(crate) fn yaw_to_sim(heading: f32) -> f32 {
+    -heading
+}
+
+pub(crate) fn yaw_from_sim(yaw: f32) -> f32 {
+    -yaw
 }
 
 #[repr(C)]
@@ -86,7 +98,20 @@ pub struct ErWorld {
     pub target: ErVec3,
     /// A hostile actor is near: sprinting costs stamina.
     pub in_combat: u8,
+    /// Which way the player actually faces in Skyrim.
+    pub heading: f32,
+    /// Skyrim (its locomotion, or a directional-movement mod) turns the
+    /// player this frame: the simulation takes `heading` as its own facing.
+    /// Otherwise the simulation owns the facing and the bridge applies
+    /// `ErOutput::heading`. The first update always takes `heading`.
+    pub follow_heading: u8,
 }
+
+/// Seconds the simulation may think it is in the air while Skyrim reports the
+/// player standing still at one height, before it is put down on the ground.
+/// Skyrim decides whether the player really left the ground; the simulation
+/// must never wait for a fall that is not happening.
+const STUCK_IN_AIR_SECONDS: f32 = 0.25;
 
 /// What the player is doing, for the bridge to pick animations.
 #[repr(u32)]
@@ -152,6 +177,7 @@ pub struct ErOutput {
     pub speed: f32,
     pub sprinting: u8,
     pub crouching: u8,
+    /// Raising or holding the guard (it blocks once fully up).
     pub guarding: u8,
     pub invincible: u8,
     pub airborne: u8,
@@ -204,17 +230,62 @@ pub struct ErCombat {
     serial: u32,
     /// The action playing after the last tick, to spot new ones.
     last_action: Option<(ActionId, f32)>,
+    /// Facing taken from Skyrim at least once.
+    synced: bool,
+    /// Skyrim's height of the player last frame, and how long the simulation
+    /// has been airborne while that height did not change.
+    last_z: Option<f32>,
+    air_still: f32,
+    /// Once that has happened, the height (Skyrim units) the player is held
+    /// at, taken as ground for as long as Skyrim keeps the player there.
+    held_at: Option<f32>,
 }
 
 impl ErCombat {
     pub fn new(position: ErVec3) -> Self {
-        Self { player: Player::new(position.to_sim()), level: Level::flat(), pending: 0.0, serial: 0, last_action: None }
+        Self {
+            player: Player::new(position.to_sim()),
+            level: Level::flat(),
+            pending: 0.0,
+            serial: 0,
+            last_action: None,
+            synced: false,
+            last_z: None,
+            air_still: 0.0,
+            held_at: None,
+        }
     }
 
     pub fn update(&mut self, dt: f32, input: &ErInput, world: &ErWorld) -> ErOutput {
         // Skyrim's collision has the last word on where the player is.
         self.player.pos = world.position.to_sim();
-        self.level.ground = Some(world.ground_z / UNITS_PER_METRE);
+        if world.follow_heading != 0 || !self.synced {
+            self.player.yaw = yaw_to_sim(world.heading);
+            self.synced = true;
+        }
+        let mut ground = world.ground_z / UNITS_PER_METRE;
+        // In the air in the simulation, but Skyrim has the player standing at
+        // the same height frame after frame: Skyrim never jumped (no animation
+        // answered, or something held the player down). Land where Skyrim
+        // has the player rather than stay airborne, and locked, for ever.
+        let standing = self.last_z.is_some_and(|z| (z - world.position.z).abs() < 1.0);
+        self.last_z = Some(world.position.z);
+        if matches!(self.player.state, State::Air(_)) && standing {
+            self.air_still += dt.max(0.0);
+        } else {
+            self.air_still = 0.0;
+        }
+        if self.air_still >= STUCK_IN_AIR_SECONDS {
+            self.held_at = Some(world.position.z);
+            self.air_still = 0.0;
+        }
+        if !standing {
+            self.held_at = None;
+        }
+        if let Some(z) = self.held_at {
+            ground = ground.max(z / UNITS_PER_METRE);
+        }
+        self.level.ground = Some(ground);
         let target = (world.has_target != 0).then(|| world.target.to_sim());
 
         self.pending = (self.pending + dt.max(0.0)).min(DT * MAX_TICKS_PER_FRAME as f32);
@@ -312,7 +383,7 @@ impl ErCombat {
         }
         ErOutput {
             position: ErVec3::from_sim(p.pos),
-            heading: p.yaw,
+            heading: yaw_from_sim(p.yaw),
             state,
             action: name,
             action_frame: frame,
@@ -322,7 +393,7 @@ impl ErCombat {
             speed: p.speed * UNITS_PER_METRE,
             sprinting: p.sprinting as u8,
             crouching: p.crouching as u8,
-            guarding: p.guard_up() as u8,
+            guarding: p.guarding as u8,
             invincible: p.invincible() as u8,
             airborne: p.airborne() as u8,
             interruptible: (interruptible && p.swap.is_none()) as u8,
@@ -379,7 +450,7 @@ fn button(b: ErButton) -> Button {
 fn sim_input(i: &ErInput) -> Input {
     Input {
         mv: Vec2::new(i.move_x, i.move_y),
-        cam_yaw: i.camera_heading,
+        cam_yaw: yaw_to_sim(i.camera_heading),
         dodge: button(i.dodge),
         jump: button(i.jump),
         light: button(i.light),
@@ -552,7 +623,7 @@ mod tests {
     fn axes_round_trip() {
         let v = ErVec3 { x: 140.0, y: -70.0, z: 35.0 };
         let sim = v.to_sim();
-        assert_eq!(sim, Vec3::new(2.0, 0.5, -1.0));
+        assert_eq!(sim, Vec3::new(-2.0, 0.5, -1.0));
         assert_eq!(ErVec3::from_sim(sim), v);
     }
 
@@ -705,6 +776,107 @@ mod tests {
         assert_eq!(out.state, ErState::Ground, "standing on ground 10 m up is not falling");
         assert!((out.position.z - 700.0).abs() < 0.5);
     }
+
+    /// Joel's log: a jump that no Skyrim animation answered left the core in
+    /// state 1 (action) with stamina frozen, and every later dodge did
+    /// nothing. Skyrim never moves the player here, as when no animation
+    /// answers: the core must come back down on its own.
+    #[test]
+    fn a_jump_skyrim_never_follows_still_ends() {
+        let mut c = ErCombat::new(ErVec3::default());
+        let world = ErWorld::default();
+        let mut input = ErInput::default();
+        tap(&mut input.jump);
+        let out = c.update(FRAME, &input, &world);
+        assert_eq!(out.action_kind, ErAction::Jump);
+        input.jump = ErButton::default();
+        let mut out = out;
+        let mut frames = 0;
+        // Skyrim's position stays put: never fed back.
+        while out.state != ErState::Ground && frames < 600 {
+            out = c.update(FRAME, &input, &world);
+            frames += 1;
+        }
+        assert_eq!(out.state, ErState::Ground, "still {:?} after {frames} frames", out.state);
+        assert!(frames < 240, "took {frames} frames to come down");
+
+        // Stamina comes back and the next dodge rolls.
+        let low = out.stamina;
+        for _ in 0..60 {
+            out = c.update(FRAME, &input, &world);
+        }
+        assert!(out.stamina > low || out.stamina == 1.0, "stamina frozen at {}", out.stamina);
+        let before = out.action_serial;
+        input.move_y = 1.0;
+        tap(&mut input.dodge);
+        c.update(FRAME, &input, &world);
+        input.dodge = ErButton::default();
+        release(&mut input.dodge);
+        let out = c.update(FRAME, &input, &world);
+        assert_ne!(out.action_serial, before, "the dodge after the jump must roll");
+        assert_eq!(out.action_kind, ErAction::Roll);
+    }
+
+    /// In the air in the simulation while Skyrim holds the player at one
+    /// height (walked off something Skyrim says is not a ledge, a ground
+    /// height that is off): it lands instead of falling for ever.
+    #[test]
+    fn airborne_while_skyrim_stands_still_lands() {
+        let mut c = ErCombat::new(ErVec3 { z: 700.0, ..Default::default() });
+        // Skyrim says the ground is 5 m below, but the player stays at 700.
+        let world = ErWorld { position: ErVec3 { z: 700.0, ..Default::default() }, ground_z: 350.0, ..Default::default() };
+        let input = ErInput::default();
+        let mut out = c.update(FRAME, &input, &world);
+        assert_eq!(out.state, ErState::Air);
+        for _ in 0..60 {
+            out = c.update(FRAME, &input, &world);
+        }
+        assert_ne!(out.state, ErState::Air, "Skyrim never fell; the core must not wait for it");
+    }
+
+    #[test]
+    fn stick_right_goes_right_in_skyrim() {
+        // Camera looks down +Y (heading 0); its right is +X.
+        let mut c = ErCombat::new(ErVec3::default());
+        let mut world = ErWorld::default();
+        let input = ErInput { move_x: 1.0, ..Default::default() };
+        let mut out = c.output();
+        for _ in 0..60 {
+            out = frame(&mut c, &input, &mut world);
+        }
+        assert!(out.position.x > 100.0, "should run along +X, got {:?}", out.position);
+        assert!((out.heading - std::f32::consts::FRAC_PI_2).abs() < 0.05, "faces +X: heading {}", out.heading);
+    }
+
+    #[test]
+    fn locked_on_roll_to_the_right_says_right() {
+        let mut c = ErCombat::new(ErVec3::default());
+        let mut world = ErWorld { has_target: 1, target: ErVec3 { y: 500.0, ..Default::default() }, ..Default::default() };
+        let mut input = ErInput { move_x: 1.0, ..Default::default() };
+        frame(&mut c, &input, &mut world);
+        tap(&mut input.dodge);
+        frame(&mut c, &input, &mut world);
+        input.dodge = ErButton::default();
+        release(&mut input.dodge);
+        let out = frame(&mut c, &input, &mut world);
+        assert_eq!(out.action_kind, ErAction::Roll);
+        assert_eq!(out.action_dir, Dir::Right as u32);
+        let start = out.position;
+        let mut out = out;
+        for _ in 0..40 {
+            out = frame(&mut c, &input, &mut world);
+        }
+        // The stand-in's rolls all move straight ahead; the real ones sideways.
+        assert!(cfg!(not(er_data)) || out.position.x > start.x + 50.0, "rolled toward +X: {:?} -> {:?}", start, out.position);
+    }
+
+    #[test]
+    fn follows_skyrims_heading_when_asked() {
+        let mut c = ErCombat::new(ErVec3::default());
+        let world = ErWorld { heading: 1.0, follow_heading: 1, ..Default::default() };
+        let out = c.update(FRAME, &ErInput::default(), &world);
+        assert!((out.heading - 1.0).abs() < 1e-4);
+    }
 }
 
 /// The C header's structs must lay out exactly like these. The bridge
@@ -719,8 +891,10 @@ mod layout {
         assert_eq!(size_of::<ErVec3>(), 12);
         assert_eq!(size_of::<ErButton>(), 3);
         assert_eq!(size_of::<ErInput>(), 32);
-        assert_eq!(size_of::<ErWorld>(), 36);
+        assert_eq!(size_of::<ErWorld>(), 44);
         assert_eq!(offset_of!(ErWorld, target), 20);
+        assert_eq!(offset_of!(ErWorld, heading), 36);
+        assert_eq!(offset_of!(ErWorld, follow_heading), 40);
         assert_eq!(size_of::<ErOutput>(), 220);
         assert_eq!(offset_of!(ErOutput, action), 20);
         assert_eq!(offset_of!(ErOutput, stamina), 80);

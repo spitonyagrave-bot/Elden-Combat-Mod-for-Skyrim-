@@ -58,6 +58,8 @@ void Settings::Load()
     events[ER_ACTION_GUARD_COUNTER] = ReadEvent(L"GuardCounter", "attackPowerStartInPlace");
     events[ER_ACTION_LEFT_ATTACK] = ReadEvent(L"LeftAttack", "attackStartLeftHand");
     events[ER_ACTION_HURT] = ReadEvent(L"Hurt", "");
+    blockStart = ReadEvent(L"BlockStart", "blockStart");
+    blockStop = ReadEvent(L"BlockStop", "blockStop");
 
     coreHitDetection = GetPrivateProfileIntW(L"General", L"CoreHitDetection", 0, kPath) != 0;
 }

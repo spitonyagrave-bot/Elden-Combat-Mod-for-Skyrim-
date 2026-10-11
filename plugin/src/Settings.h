@@ -19,6 +19,9 @@ struct Settings
     // nothing. Directional actions try "<event><Dir>" first (Forward, Back,
     // Left, Right), e.g. TK Dodge's TKDodgeForward.
     std::array<std::string, ER_ACTION_COUNT> events{};
+    // Sent when the core raises and lowers the guard.
+    std::string blockStart = "blockStart";
+    std::string blockStop = "blockStop";
 
     // Let Precision, MCO and the rest swing the weapon (phase A), or let the
     // core's own hit detection decide what was hit (phase B).
