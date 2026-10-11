@@ -47,6 +47,13 @@ void Bridge::Tick(RE::PlayerCharacter* player, float delta)
         input->toggled = false;
         logger::info("Elden Ring mode {}", input->enabled ? "on" : "off");
         RE::DebugNotification(input->enabled ? "Elden Ring Modus: AN" : "Elden Ring Modus: AUS");
+        // One key press is enough: switching on also draws the weapon.
+        if (auto* actorState = player->AsActorState(); input->enabled && actorState && !actorState->IsWeaponDrawn()) {
+            player->DrawWeaponMagicHands(true);
+        }
+        if (input->enabled && RE::PlayerCamera::GetSingleton()->IsInFirstPerson()) {
+            RE::DebugNotification("Elden Ring Modus braucht die Third-Person-Ansicht");
+        }
     }
 
     auto* state = player->AsActorState();
@@ -108,6 +115,9 @@ void Bridge::SetCombatMode(bool on)
 {
     combatMode = on;
     logger::info("Combat mode {}", on ? "on" : "off");
+    if (on) {
+        RE::DebugNotification("Elden Ring Kampfsteuerung aktiv");
+    }
     if (auto* controls = RE::PlayerControls::GetSingleton()) {
         // The core owns these while a weapon is drawn. Movement, Activate,
         // shouts, sneaking and the camera stay with Skyrim.
