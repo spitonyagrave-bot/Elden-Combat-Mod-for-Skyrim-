@@ -18,6 +18,7 @@ namespace
     bool directionalPaused = false;
     bool lockDisabled = false;
     bool hudTarget = false;
+    bool hudRefusalLogged = false;
     RE::ActorHandle shownTarget;
 
     const char* Text(TDM_API::APIResult r)
@@ -96,7 +97,16 @@ namespace Integrations
             if (hud) {
                 const auto r = hud->RequestTargetControl(handle);
                 hudTarget = r == TrueHUD_API::APIResult::OK || r == TrueHUD_API::APIResult::AlreadyGiven;
-                logger::info("TrueHUD target marker control: {}", hudTarget ? "granted" : "refused");
+                if (hudTarget) {
+                    logger::info("TrueHUD target marker control: granted");
+                } else if (!hudRefusalLogged) {
+                    // True Directional Movement takes TrueHUD's target control
+                    // when the game starts and never hands it back, so with TDM
+                    // installed the marker stays TDM's (and off, since TDM's own
+                    // lock is off). Nothing else is sent to TrueHUD.
+                    hudRefusalLogged = true;
+                    logger::info("TrueHUD target marker: another mod holds it (TDM keeps it from game start); no marker for our lock-on");
+                }
             }
         } else {
             Update(false, 0.0f, false, nullptr);

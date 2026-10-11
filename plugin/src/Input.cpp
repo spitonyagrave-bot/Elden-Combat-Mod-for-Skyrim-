@@ -46,7 +46,10 @@ ErInput Input::Take(float cameraHeading)
     out.walk = walk;
     out.crouch = crouchPressed;
     out.lock = lockPressed;
+    // Edges: each press counts once. (Leaving lockPressed set toggled the
+    // lock-on every frame after the first press.)
     crouchPressed = false;
+    lockPressed = false;
     return out;
 }
 
