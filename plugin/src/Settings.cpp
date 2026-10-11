@@ -47,7 +47,10 @@ void Settings::Load()
     events[ER_ACTION_BACKSTEP] = ReadEvent(L"Backstep", "TKDodgeBack");
     events[ER_ACTION_JUMP] = ReadEvent(L"Jump", "JumpStandingStart");
     events[ER_ACTION_LIGHT_ATTACK] = ReadEvent(L"LightAttack", "attackStart");
-    events[ER_ACTION_HEAVY_CHARGE] = ReadEvent(L"HeavyCharge", "attackPowerStartInPlace");
+    // Skyrim has no held power attack, so the swing plays when the core
+    // releases the charge.
+    events[ER_ACTION_HEAVY_CHARGE] = ReadEvent(L"HeavyCharge", "");
+    events[ER_ACTION_HEAVY_ATTACK] = ReadEvent(L"HeavyAttack", "attackPowerStartInPlace");
     events[ER_ACTION_RUN_ATTACK] = ReadEvent(L"RunAttack", "attackStartSprint");
     events[ER_ACTION_ROLL_ATTACK] = ReadEvent(L"RollAttack", "attackStart");
     events[ER_ACTION_BACKSTEP_ATTACK] = ReadEvent(L"BackstepAttack", "attackStart");
