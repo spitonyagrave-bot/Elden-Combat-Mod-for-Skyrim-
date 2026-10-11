@@ -35,7 +35,13 @@ const DEATH: &str = "a000_017002";
 /// Seconds for an arm layer (guard, one-handed carry) to blend in or out.
 const LAYER_BLEND: f32 = 0.12;
 /// Shortest cross-fade between clips, in frames, so nothing ever snaps.
-const MIN_BLEND_FRAMES: f32 = 2.0;
+const MIN_BLEND_FRAMES: f32 = 4.0;
+/// Between two locomotion loops (walk/run/sprint, any direction) the fade
+/// is at least this long: the feet change gait instead of popping.
+const LOCO_BLEND_FRAMES: f32 = 8.0;
+/// A locomotion loop plays at least this long before another takes over,
+/// so a stick or speed right on a threshold doesn't flip clips every frame.
+const LOCO_HOLD_SECONDS: f32 = 0.15;
 
 const LEFT_ARM: [&str; 12] = [
     "L_Clavicle", "L_UpperArm", "L_Forearm", "L_Hand", "L_Weapon",
@@ -77,6 +83,10 @@ pub struct Rig {
     carry: f32,
     swap: f32,
     rest: Option<(String, f32)>,
+    /// The locomotion loop last chosen (id, native speed) and for how long.
+    loco: Option<(u32, f32)>,
+    loco_held: f32,
+    clip_looped: bool,
     ran: f32,
     ran_dir: u32,
     still: bool,
@@ -132,6 +142,9 @@ impl Rig {
             }
         }
         let time = self.time;
+        if !(matches!(p.state, State::Ground) && p.speed >= 0.05) {
+            self.loco = None;
+        }
         match p.state {
             State::Dead { t } => (DEATH.to_string(), t + ahead, false),
             State::Air(a) if !a.jumped && a.f < FALL_START_FRAMES => (FALL_START.to_string(), a.f + ahead, false),
@@ -151,7 +164,7 @@ impl Rig {
                 // Forward, back, left, right.
                 let dir = if along.abs() >= across.abs() { (along < 0.0) as u32 } else { 2 + (across < 0.0) as u32 };
                 self.ran_dir = dir;
-                let (id, native) = if p.crouching && p.speed > (crouch_walk_speed() + crouch_run_speed()) / 2.0 {
+                let (mut id, mut native) = if p.crouching && p.speed > (crouch_walk_speed() + crouch_run_speed()) / 2.0 {
                     (CROUCH_RUN + dir, crouch_run_speed())
                 } else if p.crouching {
                     (CROUCH_WALK + dir, crouch_walk_speed())
@@ -162,6 +175,18 @@ impl Rig {
                 } else {
                     (WALK + dir, walk_speed())
                 };
+                self.loco_held += dt;
+                match self.loco {
+                    Some((held, held_native)) if held != id && self.loco_held < LOCO_HOLD_SECONDS => {
+                        id = held;
+                        native = held_native;
+                    }
+                    Some((held, _)) if held == id => {}
+                    _ => {
+                        self.loco = Some((id, native));
+                        self.loco_held = 0.0;
+                    }
+                }
                 let mut clip = clip_name(stance, id);
                 if p.grip == Grip::OneHand || p.crouching || clips.get(&clip).is_none() {
                     clip = clip_name(0, id);
@@ -191,11 +216,14 @@ impl Rig {
 
         // Cross-fade from whatever was shown, over the clip's authored blend time.
         if name != self.clip {
+            let was_loco = self.clip_looped && self.loco.is_some();
             self.clip = name;
             self.from.clone_from(&self.shown);
             self.fade = 0.0;
-            self.fade_len = if self.from.len() != target.len() { 0.0 } else { clip.blend.max(MIN_BLEND_FRAMES) / ANIM_FPS };
+            let min = if looped && was_loco { LOCO_BLEND_FRAMES } else { MIN_BLEND_FRAMES };
+            self.fade_len = if self.from.len() != target.len() { 0.0 } else { clip.blend.max(min) / ANIM_FPS };
         }
+        self.clip_looped = looped;
         self.fade += dt;
         let t = if self.fade_len > 0.0 { (self.fade / self.fade_len).clamp(0.0, 1.0) } else { 1.0 };
         let t = t * t * (3.0 - 2.0 * t);
@@ -272,5 +300,39 @@ impl Rig {
         self.layer = layer;
         self.target = target;
         Some(&self.target)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pose::clips::Clips;
+    use crate::pose::tests::{clips_file, row, standing};
+    use glam::Vec3;
+
+    #[test]
+    fn a_speed_on_the_walk_run_threshold_does_not_flip_clips_every_frame() {
+        let stand = row(&standing());
+        let names: Vec<String> = [IDLE, WALK, RUN].iter().map(|&id| clip_name(0, id)).collect();
+        let list: Vec<(&str, f32, Vec<Vec<f32>>)> = names.iter().map(|n| (n.as_str(), 0.0, vec![stand.clone(); 30])).collect();
+        let clips = Clips::read(&clips_file(&list)).unwrap();
+        let mut rig = Rig::new();
+        let mut p = Player::new(Vec3::ZERO);
+        p.move_dir = p.facing();
+        let threshold = (walk_speed() + run_speed()) / 2.0;
+        let dt = 1.0 / 60.0;
+        let mut changes = 0;
+        let mut last = String::new();
+        for i in 0..60 {
+            // Just under, then just over, every frame.
+            p.speed = threshold + if i % 2 == 0 { -0.01 } else { 0.01 };
+            rig.update(&p, &clips, dt, 0.0);
+            if rig.clip != last {
+                changes += 1;
+                last = rig.clip.clone();
+            }
+        }
+        // One second of flip-flopping input: a handful of changes, not 60.
+        assert!(changes <= 8, "{changes} clip changes in a second");
     }
 }
