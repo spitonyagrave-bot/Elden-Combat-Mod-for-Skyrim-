@@ -26,6 +26,12 @@ struct Settings
     // Let Precision, MCO and the rest swing the weapon (phase A), or let the
     // core's own hit detection decide what was hit (phase B).
     bool coreHitDetection = false;
+    // While the pose driver runs: the core's root motion moves the player
+    // during rolls, attacks and jumps; hits scale Skyrim's weapon damage.
+    bool rootMotion = true;
+    float damageScale = 1.0f;
+    float hitShake = 0.3f;
+    std::string hitSound;
 
     // [Pose]: play the Elden Ring animations on the player's skeleton
     // (needs ERCombat.eranims). Hook 1: after the player's animation update;

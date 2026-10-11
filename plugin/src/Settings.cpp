@@ -11,16 +11,41 @@ namespace
         return static_cast<std::uint32_t>(GetPrivateProfileIntW(L"Keys", key, static_cast<int>(fallback), kPath));
     }
 
-    std::string ReadEvent(const wchar_t* key, const char* fallback)
+    std::string ReadString(const wchar_t* section, const wchar_t* key, const char* fallback)
     {
         wchar_t buffer[128]{};
         std::wstring wideFallback(fallback, fallback + std::strlen(fallback));
-        GetPrivateProfileStringW(L"Events", key, wideFallback.c_str(), buffer, 128, kPath);
+        GetPrivateProfileStringW(section, key, wideFallback.c_str(), buffer, 128, kPath);
         std::string out;
         for (const wchar_t* c = buffer; *c; ++c) {
             out.push_back(static_cast<char>(*c));
         }
+        // Drop a trailing comment and spaces.
+        if (auto semi = out.find(';'); semi != std::string::npos) {
+            out.erase(semi);
+        }
+        while (!out.empty() && (out.back() == ' ' || out.back() == '\t')) {
+            out.pop_back();
+        }
         return out;
+    }
+
+    std::string ReadEvent(const wchar_t* key, const char* fallback)
+    {
+        return ReadString(L"Events", key, fallback);
+    }
+
+    float ReadFloat(const wchar_t* section, const wchar_t* key, float fallback)
+    {
+        const auto text = ReadString(section, key, "");
+        if (text.empty()) {
+            return fallback;
+        }
+        try {
+            return std::stof(text);
+        } catch (...) {
+            return fallback;
+        }
     }
 }
 
@@ -65,4 +90,8 @@ void Settings::Load()
     poseHook = static_cast<std::int32_t>(GetPrivateProfileIntW(L"Pose", L"Hook", 1, kPath));
 
     coreHitDetection = GetPrivateProfileIntW(L"General", L"CoreHitDetection", 0, kPath) != 0;
+    rootMotion = GetPrivateProfileIntW(L"Pose", L"RootMotion", 1, kPath) != 0;
+    damageScale = ReadFloat(L"Pose", L"DamageScale", damageScale);
+    hitShake = ReadFloat(L"Pose", L"HitShake", hitShake);
+    hitSound = ReadString(L"Pose", L"HitSound", "");
 }

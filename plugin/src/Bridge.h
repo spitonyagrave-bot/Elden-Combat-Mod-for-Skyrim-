@@ -31,6 +31,9 @@ private:
     static void Tick(RE::PlayerCharacter* player, float delta);
     static void SetCombatMode(bool on);
     static void SetBlock(RE::PlayerCharacter* player, bool on);
+    static void ApplyRootMotion(RE::PlayerCharacter* player, const ErWorld& world, const ErOutput& out, bool acting);
+    static void ReleaseMovement();
+    static void CoreHits(RE::PlayerCharacter* player, const ErOutput& out);
     static void PlayAction(RE::PlayerCharacter* player, const ErOutput& out);
     static float CameraHeading(RE::PlayerCharacter* player);
 
@@ -39,5 +42,6 @@ private:
     static inline std::uint32_t lastSerial = 0;
     static inline bool iframes = false;
     static inline bool blocking = false;
+    static inline bool heldMovement = false;
     static inline ErState lastState = ER_STATE_GROUND;
 };

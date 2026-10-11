@@ -1,13 +1,15 @@
 #include "Bridge.h"
 
 #include "Input.h"
+#include "Integrations.h"
 #include "PoseDriver.h"
 #include "Settings.h"
 
 static_assert(sizeof(ErInput) == 32);
 static_assert(sizeof(ErWorld) == 44);
 static_assert(offsetof(ErWorld, follow_heading) == 40);
-static_assert(sizeof(ErOutput) == 220);
+static_assert(sizeof(ErOutput) == 224);
+static_assert(offsetof(ErOutput, hit_motion) == 220);
 static_assert(offsetof(ErOutput, sweep_a) == 88);
 
 namespace
@@ -19,6 +21,26 @@ namespace
     bool Directional(ErAction kind)
     {
         return kind == ER_ACTION_ROLL || kind == ER_ACTION_CROUCH_ROLL || kind == ER_ACTION_HURT;
+    }
+
+    float Dot(const ErVec3& a, const ErVec3& b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+    ErVec3 Sub(const ErVec3& a, const ErVec3& b) { return { a.x - b.x, a.y - b.y, a.z - b.z }; }
+    ErVec3 Add(const ErVec3& a, const ErVec3& b, float s) { return { a.x + b.x * s, a.y + b.y * s, a.z + b.z * s }; }
+
+    // Shortest distance between the segments a-b and c-d (the core's own
+    // segment_distance, in Skyrim units).
+    float SegmentDistance(const ErVec3& a, const ErVec3& b, const ErVec3& c, const ErVec3& d)
+    {
+        const ErVec3 u = Sub(b, a), v = Sub(d, c), w = Sub(a, c);
+        const float uu = Dot(u, u), uv = Dot(u, v), vv = Dot(v, v), uw = Dot(u, w), vw = Dot(v, w);
+        const float denom = uu * vv - uv * uv;
+        float s = denom > 1e-8f ? std::clamp((uv * vw - vv * uw) / denom, 0.0f, 1.0f) : 0.0f;
+        const float t = vv > 1e-8f ? std::clamp((uv * s + vw) / vv, 0.0f, 1.0f) : 0.0f;
+        if (uu > 1e-8f) {
+            s = std::clamp((uv * t - uw) / uu, 0.0f, 1.0f);
+        }
+        const ErVec3 p = Add(a, u, s), q = Add(c, v, t), r = Sub(p, q);
+        return std::sqrt(Dot(r, r));
     }
 
     bool MenuUp()
@@ -96,8 +118,17 @@ void Bridge::Tick(RE::PlayerCharacter* player, float delta)
     er_update(combat, delta, &controls, &world, &out);
     PoseDriver::SetSource(combat);
     lock.unlock();
-    if (out.state != ER_STATE_GROUND && out.state != ER_STATE_DEAD) {
+    const bool posing = PoseDriver::Active();
+    const bool acting = out.state != ER_STATE_GROUND && out.state != ER_STATE_DEAD;
+    if (acting) {
         player->SetRotationZ(out.heading);
+    }
+    // TDM keeps its hands off the yaw while the core turns the player.
+    Integrations::Update(acting, out.heading, false, nullptr);
+    if (posing) {
+        ApplyRootMotion(player, world, out, acting);
+    } else if (heldMovement) {
+        ReleaseMovement();
     }
     if (out.state != lastState) {
         logger::info("Core state {} -> {} (action {} \"{}\", stamina {:.2f})", static_cast<std::uint32_t>(lastState),
@@ -116,6 +147,10 @@ void Bridge::Tick(RE::PlayerCharacter* player, float delta)
     if (out.action_serial != lastSerial) {
         lastSerial = out.action_serial;
         PlayAction(player, out);
+    }
+
+    if (out.hit_live && (posing || Settings::Get().coreHitDetection)) {
+        CoreHits(player, out);
     }
 
     // Guard: raise and lower Skyrim's block, so its blocking (damage, block
@@ -142,6 +177,10 @@ void Bridge::Tick(RE::PlayerCharacter* player, float delta)
 void Bridge::SetCombatMode(bool on)
 {
     combatMode = on;
+    Integrations::SetErMode(on);
+    if (!on && heldMovement) {
+        ReleaseMovement();
+    }
     logger::info("Combat mode {}", on ? "on" : "off");
     if (on) {
         RE::DebugNotification("Elden Ring Kampfsteuerung aktiv");
@@ -184,6 +223,13 @@ void Bridge::PlayAction(RE::PlayerCharacter* player, const ErOutput& out)
     if (kind >= ER_ACTION_COUNT) {
         return;
     }
+    if (PoseDriver::Active()) {
+        // The Elden Ring animation plays on the skeleton itself. Starting a
+        // Skyrim attack or dodge would hand MCO, Precision, TK Dodge and the
+        // rest something to act on.
+        logger::info("Action {} ({}): Elden Ring pose plays it, no Skyrim event", static_cast<std::uint32_t>(kind), static_cast<const char*>(out.action));
+        return;
+    }
     const auto& base = Settings::Get().events[kind];
     if (base.empty()) {
         logger::info("Action {} ({}): no event set in ERCombat.ini", static_cast<std::uint32_t>(kind), static_cast<const char*>(out.action));
@@ -212,6 +258,100 @@ void Bridge::SetBlock(RE::PlayerCharacter* player, bool on)
     }
     const bool answered = player->NotifyAnimationGraph(event.c_str());
     logger::info("Guard {}: {} {}", on ? "up" : "down", event, answered ? "played" : "had no animation answer");
+}
+
+void Bridge::ApplyRootMotion(RE::PlayerCharacter* player, const ErWorld& world, const ErOutput& out, bool acting)
+{
+    auto* controls = RE::PlayerControls::GetSingleton();
+    if (!acting) {
+        if (heldMovement) {
+            ReleaseMovement();
+        }
+        return;
+    }
+    // During a roll, attack or jump the core's root motion moves the player,
+    // not Skyrim's walk: hold Skyrim's movement input at rest.
+    if (controls) {
+        if (!heldMovement) {
+            controls->movementHandler->SetInputEventHandlingEnabled(false);
+            heldMovement = true;
+        }
+        controls->data.moveInputVec = RE::NiPoint2(0.0f, 0.0f);
+    }
+    if (!Settings::Get().rootMotion) {
+        return;
+    }
+    const float dx = out.position.x - world.position.x;
+    const float dy = out.position.y - world.position.y;
+    const float step = std::sqrt(dx * dx + dy * dy);
+    // More than a sprinting step in one frame is not root motion (a hitch, a
+    // teleport): leave it.
+    if (step < 0.01f || step > 60.0f) {
+        return;
+    }
+    RE::NiPoint3 pos = player->GetPosition();
+    pos.x += dx;
+    pos.y += dy;
+    player->SetPosition(pos, true);
+}
+
+void Bridge::ReleaseMovement()
+{
+    heldMovement = false;
+    if (auto* controls = RE::PlayerControls::GetSingleton()) {
+        controls->movementHandler->SetInputEventHandlingEnabled(true);
+    }
+}
+
+void Bridge::CoreHits(RE::PlayerCharacter* player, const ErOutput& out)
+{
+    auto* lists = RE::ProcessLists::GetSingleton();
+    if (!lists) {
+        return;
+    }
+    const auto me = player->GetPosition();
+    // Skyrim's own damage for the weapon in hand, times the swing's motion value.
+    float base = 4.0f;
+    if (auto* weapon = player->GetEquippedObject(false); weapon && weapon->IsWeapon()) {
+        base = static_cast<float>(weapon->As<RE::TESObjectWEAP>()->GetAttackDamage());
+    }
+    const float bodyRadius = 22.0f;
+    for (auto& handle : lists->highActorHandles) {
+        auto ptr = handle.get();
+        auto* actor = ptr.get();
+        if (!actor || actor == player || actor->IsDead() || !actor->Get3D()) {
+            continue;
+        }
+        const auto at = actor->GetPosition();
+        if (at.GetDistance(me) > 700.0f) {
+            continue;
+        }
+        const ErVec3 feet{ at.x, at.y, at.z + bodyRadius };
+        const ErVec3 head{ at.x, at.y, at.z + 120.0f * actor->GetScale() - bodyRadius };
+        bool touched = false;
+        for (int i = 0; i < ER_SWEEP_STEPS && !touched; ++i) {
+            touched = SegmentDistance(out.sweep_a[i], out.sweep_b[i], feet, head) <= out.hit_radius + bodyRadius;
+        }
+        if (!touched) {
+            continue;
+        }
+        {
+            std::lock_guard lock(CoreLock());
+            er_confirm_hit(combat);
+        }
+        const float damage = base * out.hit_motion * Settings::Get().damageScale;
+        actor->AsActorValueOwner()->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kHealth, -damage);
+        // Stagger by how heavy the swing is.
+        actor->SetGraphVariableFloat("staggerMagnitude"sv, std::clamp(out.hit_motion * 0.5f, 0.1f, 1.0f));
+        actor->NotifyAnimationGraph("staggerStart"sv);
+        RE::ShakeCamera(Settings::Get().hitShake * out.hit_motion, me, 0.25f);
+        if (!Settings::Get().hitSound.empty()) {
+            RE::PlaySound(Settings::Get().hitSound.c_str());
+        }
+        logger::info("Core hit {} for {:.1} (weapon {:.0} x motion {:.2})", actor->GetName(), damage, base, out.hit_motion);
+        // One target per swing, as the core marks the swing landed.
+        break;
+    }
 }
 
 float Bridge::CameraHeading(RE::PlayerCharacter* player)

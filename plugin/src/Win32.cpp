@@ -75,4 +75,15 @@ namespace Win32
         CoTaskMemFree(documents);
         return path / "My Games" / "Skyrim Special Edition" / "SKSE";
     }
+
+    void* RequestPluginApi(const wchar_t* dll, std::uint8_t version)
+    {
+        HMODULE module = GetModuleHandleW(dll);
+        if (!module) {
+            return nullptr;
+        }
+        using Request = void* (*)(std::uint8_t);
+        auto request = reinterpret_cast<Request>(GetProcAddress(module, "RequestPluginAPI"));
+        return request ? request(version) : nullptr;
+    }
 }

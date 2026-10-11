@@ -24,4 +24,8 @@ namespace Win32
     // folder name from an address that is wrong on 1.6.1170 and ends up in
     // "My Games/Skyrim.INI/SKSE" instead.
     std::optional<std::filesystem::path> LogDirectory();
+
+    // Another SKSE plugin's modder API: calls `RequestPluginAPI(version)`
+    // exported by `dll` (e.g. L"TrueDirectionalMovement.dll"), if loaded.
+    void* RequestPluginApi(const wchar_t* dll, std::uint8_t version);
 }

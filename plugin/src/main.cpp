@@ -1,5 +1,6 @@
 #include "Bridge.h"
 #include "Input.h"
+#include "Integrations.h"
 #include "PoseDriver.h"
 #include "Settings.h"
 #include "Win32.h"
@@ -66,6 +67,7 @@ namespace
         if (message->type == SKSE::MessagingInterface::kDataLoaded) {
             Input::Get()->Register();
             logger::info("Listening to input");
+            Integrations::Load();
         }
     }
 }

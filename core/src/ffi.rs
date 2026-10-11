@@ -199,6 +199,9 @@ pub struct ErOutput {
     pub hit_damage: f32,
     /// Seconds both sides should freeze for if this swing lands.
     pub hit_stop: f32,
+    /// The swing's motion value (1.0 = the weapon's plain damage), for the
+    /// bridge to scale Skyrim's own weapon damage by.
+    pub hit_motion: f32,
 }
 
 /// How hard an incoming hit is.
@@ -422,6 +425,7 @@ impl ErCombat {
             hit_radius: hit.map_or(0.0, |h| h.radius * UNITS_PER_METRE),
             hit_damage: hit.map_or(0.0, |h| h.attack * h.mv),
             hit_stop: hit.map_or(0.0, |h| h.stop * crate::sim::data::HIT_STOP_SCALE),
+            hit_motion: hit.map_or(0.0, |h| h.mv),
         }
     }
 }
@@ -1110,7 +1114,8 @@ mod layout {
         assert_eq!(offset_of!(ErWorld, target), 20);
         assert_eq!(offset_of!(ErWorld, heading), 36);
         assert_eq!(offset_of!(ErWorld, follow_heading), 40);
-        assert_eq!(size_of::<ErOutput>(), 220);
+        assert_eq!(size_of::<ErOutput>(), 224);
+        assert_eq!(offset_of!(ErOutput, hit_motion), 220);
         assert_eq!(offset_of!(ErOutput, action), 20);
         assert_eq!(offset_of!(ErOutput, stamina), 80);
         assert_eq!(offset_of!(ErOutput, sweep_a), 88);

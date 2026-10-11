@@ -94,6 +94,7 @@ typedef struct ErOutput {
     float hit_radius;
     float hit_damage;
     float hit_stop;
+    float hit_motion; /* the swing's motion value: 1.0 = the weapon's plain damage */
 } ErOutput;
 
 typedef enum ErHurt : uint32_t {
