@@ -150,3 +150,4 @@ Neither file is ever committed or uploaded, so CI keeps building against the stu
 - **Ashes of War.** Each weapon class gets a default skill on one key, paid with Magicka as FP. A lesser power or MCM page swaps the skill.
 - **Boss health bar.** Bosses and dragons get an ER-style bar (TrueHUD boss bar). Music already comes from the modlist.
 - Not now: mounted combat. Flasks: Joel already has a mod for that.
+- **SkyParkour stays working (Joel, 2026-10-11).** Joel uses SkyParkour V for climbing: standing at a ledge and pressing jump climbs or vaults over it. In ER mode the jump key must still reach SkyParkour at a ledge. Before an ER jump, run our own ledge check (a ray forward at chest height, then a free space check above the ledge, matching SkyParkour's reach). At a ledge: no ER jump, the game's jump input passes through untouched, and our pose driver pauses until SkyParkour's climb animation ends. Everywhere else: ER jump.
