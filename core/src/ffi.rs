@@ -14,6 +14,8 @@ use std::path::Path;
 
 use glam::{Vec2, Vec3};
 
+use crate::pose::retarget::{ErXform, BONE_COUNT};
+use crate::pose::{self, Driver, Frame, Info};
 use crate::sim::data::{ActionId, AttackKind, Dir, HurtLevel, DT};
 use crate::sim::erdata::ReadError;
 use crate::sim::tables::{self, LoadError};
@@ -319,6 +321,22 @@ impl ErCombat {
         self.last_action = now;
     }
 
+    /// Animation frames the simulation's clock is past its last tick.
+    pub fn ahead(&self) -> f32 {
+        (self.pending / DT).clamp(0.0, 1.0) * crate::sim::data::DF
+    }
+
+    /// How high the simulation has the player above the ground Skyrim
+    /// reported (a jump's arc), Skyrim units.
+    pub fn lift(&self) -> f32 {
+        let ground = self.level.height(self.player.pos.x, self.player.pos.z);
+        ((self.player.pos.y - ground) * UNITS_PER_METRE).max(0.0)
+    }
+
+    pub fn player(&self) -> &Player {
+        &self.player
+    }
+
     pub fn receive_hit(&mut self, from: ErVec3, low: bool, hurt: ErHurt) -> ErHitResult {
         // Skyrim keeps health: the simulation only decides whether the hit
         // was avoided and which reaction plays.
@@ -595,6 +613,191 @@ pub unsafe extern "C" fn er_confirm_hit(combat: *mut ErCombat) {
     }
 }
 
+// --- Pose driver ---------------------------------------------------------------
+
+/// Skyrim node names of the bones in `ErXform` arrays, NUL-terminated.
+const BONE_NAMES: [&CStr; BONE_COUNT] = [
+    c"NPC Pelvis [Pelv]",
+    c"NPC Spine [Spn0]",
+    c"NPC Spine1 [Spn1]",
+    c"NPC Spine2 [Spn2]",
+    c"NPC Neck [Neck]",
+    c"NPC Head [Head]",
+    c"NPC L Clavicle [LClv]",
+    c"NPC L UpperArm [LUar]",
+    c"NPC L Forearm [LLar]",
+    c"NPC L Hand [LHnd]",
+    c"NPC R Clavicle [RClv]",
+    c"NPC R UpperArm [RUar]",
+    c"NPC R Forearm [RLar]",
+    c"NPC R Hand [RHnd]",
+    c"NPC L Thigh [LThg]",
+    c"NPC L Calf [LClf]",
+    c"NPC L Foot [Lft ]",
+    c"NPC L Toe0 [LToe]",
+    c"NPC R Thigh [RThg]",
+    c"NPC R Calf [RClf]",
+    c"NPC R Foot [Rft ]",
+    c"NPC R Toe0 [RToe]",
+    c"NPC L Finger10 [LF10]",
+    c"NPC L Finger20 [LF20]",
+    c"NPC R Finger10 [RF10]",
+    c"NPC R Finger20 [RF20]",
+];
+
+/// What `er_rig_update` did, for the bridge's log.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ErPoseInfo {
+    /// The Elden Ring clip playing, NUL-terminated ("" when none).
+    pub clip: [u8; 32],
+    pub frame: f32,
+    /// 0 Skyrim's pose .. 1 Elden Ring's.
+    pub weight: f32,
+    /// The clip the state calls for is not in ERCombat.eranims.
+    pub missing_clip: u8,
+}
+
+impl Default for ErPoseInfo {
+    fn default() -> Self {
+        Self { clip: [0; 32], frame: 0.0, weight: 0.0, missing_clip: 0 }
+    }
+}
+
+fn anim_load_result(result: Result<(), pose::LoadError>) -> i32 {
+    use crate::pose::clips::AnimError;
+    match result {
+        Ok(()) => ER_LOAD_OK,
+        Err(pose::LoadError::Io(_)) => ER_LOAD_IO,
+        Err(pose::LoadError::AlreadyLoaded) => ER_LOAD_ALREADY_LOADED,
+        Err(pose::LoadError::Read(AnimError::BadMagic)) => ER_LOAD_NOT_ERDATA,
+        Err(pose::LoadError::Read(AnimError::MissingJoint(_))) => ER_LOAD_LAYOUT,
+        Err(pose::LoadError::Read(_)) => ER_LOAD_CORRUPT,
+    }
+}
+
+/// Loads the baked Elden Ring animations (`ERCombat.eranims`, which is
+/// upstream's `player_anims.bin`). Once per process; returns an ErLoadResult
+/// (NOT_ERDATA: not an animation file; LAYOUT: a joint the retarget needs is
+/// missing).
+///
+/// # Safety
+/// `path` must be null or a NUL-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn er_load_anims(path: *const c_char) -> i32 {
+    if path.is_null() {
+        return ER_LOAD_BAD_PATH;
+    }
+    let Ok(path) = CStr::from_ptr(path).to_str() else {
+        return ER_LOAD_BAD_PATH;
+    };
+    anim_load_result(pose::load_file(Path::new(path)))
+}
+
+/// Clips loaded by `er_load_anims` (0 if none).
+#[no_mangle]
+pub extern "C" fn er_anims_clip_count() -> u32 {
+    pose::loaded().map_or(0, |c| c.len() as u32)
+}
+
+/// Skyrim node name of bone `bone` (< ER_BONE_COUNT), or null.
+#[no_mangle]
+pub extern "C" fn er_bone_name(bone: u32) -> *const c_char {
+    BONE_NAMES.get(bone as usize).map_or(std::ptr::null(), |n| n.as_ptr())
+}
+
+/// Whether the driver ever writes bone `bone` (the rest are landmarks it
+/// only reads).
+#[no_mangle]
+pub extern "C" fn er_bone_driven(bone: u32) -> u8 {
+    ((bone as usize) < BONE_COUNT && crate::pose::retarget::driven(bone as usize)) as u8
+}
+
+#[no_mangle]
+pub extern "C" fn er_rig_create() -> *mut Driver {
+    Box::into_raw(Box::new(Driver::new()))
+}
+
+/// # Safety
+/// `rig` must come from `er_rig_create` and not have been destroyed.
+#[no_mangle]
+pub unsafe extern "C" fn er_rig_destroy(rig: *mut Driver) {
+    if !rig.is_null() {
+        drop(Box::from_raw(rig));
+    }
+}
+
+/// Reads the player's skeleton: `reference` and `found` hold ER_BONE_COUNT
+/// entries, root-local transforms of each named bone and whether it was
+/// found. Returns how many bones will be driven (0: no animations loaded, or
+/// the skeleton is missing what the retarget needs).
+///
+/// # Safety
+/// `rig` from `er_rig_create`; both arrays ER_BONE_COUNT long.
+#[no_mangle]
+pub unsafe extern "C" fn er_rig_bind(rig: *mut Driver, reference: *const ErXform, found: *const u8) -> u32 {
+    let Some(rig) = rig.as_mut() else {
+        return 0;
+    };
+    if reference.is_null() || found.is_null() {
+        return 0;
+    }
+    let reference: &[ErXform; BONE_COUNT] = &*(reference as *const [ErXform; BONE_COUNT]);
+    let found_raw = std::slice::from_raw_parts(found, BONE_COUNT);
+    let mut found = [false; BONE_COUNT];
+    for (f, &raw) in found.iter_mut().zip(found_raw) {
+        *f = raw != 0;
+    }
+    rig.bind(reference, &found) as u32
+}
+
+/// One frame of the pose driver. `combat` is the running simulation, or null
+/// once Elden Ring mode is off (the pose then fades back to Skyrim's over
+/// ER_POSE_FADE_SECONDS). `current` is what Skyrim's animation put on the
+/// bones this frame, root-local. Fills `out` and `drive` (ER_BONE_COUNT
+/// each): set every bone whose `drive` is 1 to `out` (rotation; the pelvis's
+/// position too). Returns 1 if anything is to be written. `info` may be null.
+///
+/// # Safety
+/// `rig` from `er_rig_create`; `combat` null or from `er_create`; arrays
+/// ER_BONE_COUNT long.
+#[no_mangle]
+pub unsafe extern "C" fn er_rig_update(
+    rig: *mut Driver,
+    combat: *const ErCombat,
+    dt: f32,
+    current: *const ErXform,
+    out: *mut ErXform,
+    drive: *mut u8,
+    info: *mut ErPoseInfo,
+) -> u8 {
+    let Some(rig) = rig.as_mut() else {
+        return 0;
+    };
+    if current.is_null() || out.is_null() || drive.is_null() {
+        return 0;
+    }
+    let current: &[ErXform; BONE_COUNT] = &*(current as *const [ErXform; BONE_COUNT]);
+    let out: &mut [ErXform; BONE_COUNT] = &mut *(out as *mut [ErXform; BONE_COUNT]);
+    let frame = combat.as_ref().map(|c| Frame { player: c.player(), ahead: c.ahead(), lift: c.lift() });
+    let mut flags = [false; BONE_COUNT];
+    let mut details = Info::default();
+    let any = rig.update(frame, dt, current, out, &mut flags, &mut details);
+    let drive = std::slice::from_raw_parts_mut(drive, BONE_COUNT);
+    for (d, f) in drive.iter_mut().zip(flags) {
+        *d = f as u8;
+    }
+    if let Some(info) = info.as_mut() {
+        *info = ErPoseInfo::default();
+        let len = details.clip.len().min(31);
+        info.clip[..len].copy_from_slice(&details.clip.as_bytes()[..len]);
+        info.frame = details.frame;
+        info.weight = details.weight;
+        info.missing_clip = details.missing_clip as u8;
+    }
+    any as u8
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -617,6 +820,15 @@ mod tests {
         let out = c.update(FRAME, input, world);
         world.position = out.position;
         out
+    }
+
+    #[test]
+    fn bone_names_match_the_retarget_table() {
+        for (i, (name, _)) in crate::pose::retarget::BONES.iter().enumerate() {
+            assert_eq!(BONE_NAMES[i].to_str().unwrap(), *name);
+            assert_eq!(unsafe { CStr::from_ptr(er_bone_name(i as u32)) }.to_str().unwrap(), *name);
+        }
+        assert!(er_bone_name(BONE_COUNT as u32).is_null());
     }
 
     #[test]
@@ -891,6 +1103,9 @@ mod layout {
         assert_eq!(size_of::<ErVec3>(), 12);
         assert_eq!(size_of::<ErButton>(), 3);
         assert_eq!(size_of::<ErInput>(), 32);
+        assert_eq!(size_of::<ErXform>(), 48);
+        assert_eq!(size_of::<ErPoseInfo>(), 44);
+        assert_eq!(BONE_COUNT, 26);
         assert_eq!(size_of::<ErWorld>(), 44);
         assert_eq!(offset_of!(ErWorld, target), 20);
         assert_eq!(offset_of!(ErWorld, heading), 36);
@@ -900,5 +1115,17 @@ mod layout {
         assert_eq!(offset_of!(ErOutput, stamina), 80);
         assert_eq!(offset_of!(ErOutput, sweep_a), 88);
         assert_eq!(offset_of!(ErOutput, hit_stop), 216);
+    }
+}
+
+/// The header's pose-driver constants match the core's.
+#[cfg(test)]
+mod header {
+    #[test]
+    fn constants_match() {
+        let header = include_str!("../include/er_combat.h");
+        assert!(header.contains(&format!("#define ER_BONE_COUNT {}", crate::pose::retarget::BONE_COUNT)));
+        assert!(header.contains(&format!("#define ER_POSE_FADE_SECONDS {}f", crate::pose::FADE_SECONDS)));
+        assert!(header.contains(&format!("#define ER_SWEEP_STEPS {}", crate::sim::player::SWEEP_STEPS)));
     }
 }

@@ -126,6 +126,28 @@ typedef enum ErLoadResult : int32_t {
 
 typedef struct ErCombat ErCombat;
 
+/* --- Pose driver --------------------------------------------------------
+ * Plays the Elden Ring animation the core calls for on Skyrim's skeleton.
+ * Bones are named by er_bone_name(0..ER_BONE_COUNT-1). Transforms are in the
+ * player's 3D root space ("root-local": the root node's world transform
+ * taken out), Skyrim units. */
+#define ER_BONE_COUNT 26
+#define ER_POSE_FADE_SECONDS 0.2f
+
+typedef struct ErXform {
+    float rot[9]; /* row-major, rot[r * 3 + c] == NiMatrix3::entry[r][c] */
+    float pos[3];
+} ErXform;
+
+typedef struct ErPoseInfo {
+    char clip[32];  /* the Elden Ring clip playing, "" when none */
+    float frame;
+    float weight;   /* 0 Skyrim's pose .. 1 Elden Ring's */
+    uint8_t missing_clip; /* the state's clip is not in ERCombat.eranims (last pose held) */
+} ErPoseInfo;
+
+typedef struct ErRig ErRig;
+
 /* Loads the Elden Ring action table from an .erdata file (UTF-8 path),
  * replacing the one compiled in. Call once, before er_create. On failure
  * nothing changes and the compiled-in (stand-in) table stays. Returns an
@@ -136,6 +158,28 @@ void er_destroy(ErCombat* combat);
 void er_update(ErCombat* combat, float dt, const ErInput* input, const ErWorld* world, ErOutput* out);
 ErHitResult er_receive_hit(ErCombat* combat, ErVec3 from, uint8_t low, ErHurt hurt);
 void er_confirm_hit(ErCombat* combat);
+
+/* Loads ERCombat.eranims (upstream's player_anims.bin). Once; an
+ * ErLoadResult (NOT_ERDATA: not an animation file; LAYOUT: a joint the
+ * retarget needs is missing). */
+int32_t er_load_anims(const char* path);
+uint32_t er_anims_clip_count(void);
+/* Skyrim node name of a bone, or NULL past ER_BONE_COUNT. */
+const char* er_bone_name(uint32_t bone);
+/* 1 if the driver writes this bone; 0 for landmarks it only reads. */
+uint8_t er_bone_driven(uint32_t bone);
+ErRig* er_rig_create(void);
+void er_rig_destroy(ErRig* rig);
+/* Reads the player's skeleton (ER_BONE_COUNT root-local transforms and
+ * found flags). Returns how many bones will be driven; 0 = can't drive. */
+uint32_t er_rig_bind(ErRig* rig, const ErXform* reference, const uint8_t* found);
+/* One frame. combat NULL once Elden Ring mode is off: the pose fades back to
+ * Skyrim's. current = Skyrim's animated pose this frame (root-local). Writes
+ * out/drive (ER_BONE_COUNT each); set every bone with drive[i] == 1 to
+ * out[i] (rotation; position too for bone 0, the pelvis). Returns 1 if
+ * anything is to be written. info may be NULL. */
+uint8_t er_rig_update(ErRig* rig, const ErCombat* combat, float dt, const ErXform* current, ErXform* out,
+                      uint8_t* drive, ErPoseInfo* info);
 
 #ifdef __cplusplus
 }

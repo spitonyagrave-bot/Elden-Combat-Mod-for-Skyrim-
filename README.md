@@ -72,6 +72,25 @@ and copy `ERCombat.erdata` into `Data/SKSE/Plugins` (or the mod's
 runs on the stand-in. To run the stand-in's tests while `extracted.rs` is
 present, set `ER_COMBAT_STUB=1`.
 
+### Elden Ring animations on your character (pose driver)
+
+With `ERCombat.eranims` next to `ERCombat.dll`, the plugin plays the real
+Elden Ring animation of whatever the core is doing (idle, walk, run, rolls,
+every attack, jumps, guard) on your own character, retargeted at run time to
+your skeleton (vanilla or XPMSE). Make it from upstream's baked
+`assets/player_anims.bin`:
+
+```
+cd core
+cargo run --release --bin er_anims -- path\to\player_anims.bin ERCombat.eranims
+```
+
+It checks the file and reports any clip of the action table that is missing.
+Copy `ERCombat.eranims` into `Data/SKSE/Plugins`. `ERCombat.log` says whether
+it loaded, how many bones of your skeleton were found and driven, and which
+clip plays. `[Pose] Enabled=0` in `ERCombat.ini` switches it off. To check the
+retarget against the real animations: `ER_ANIMS=path\to\player_anims.bin cargo test`.
+
 Please keep generated data out of forks and uploads, as upstream asks.
 
 ## Status

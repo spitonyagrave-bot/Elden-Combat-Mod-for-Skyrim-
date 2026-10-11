@@ -27,6 +27,12 @@ struct Settings
     // core's own hit detection decide what was hit (phase B).
     bool coreHitDetection = false;
 
+    // [Pose]: play the Elden Ring animations on the player's skeleton
+    // (needs ERCombat.eranims). Hook 1: after the player's animation update;
+    // 0: after the player's update.
+    bool poseDriver = true;
+    std::int32_t poseHook = 1;
+
     static Settings& Get();
     void Load();
 };

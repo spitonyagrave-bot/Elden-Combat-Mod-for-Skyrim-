@@ -1,5 +1,6 @@
 #include "Bridge.h"
 #include "Input.h"
+#include "PoseDriver.h"
 #include "Settings.h"
 #include "Win32.h"
 
@@ -83,6 +84,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse)
 
     Settings::Get().Load();
     Bridge::Install();
+    PoseDriver::Install();
     SKSE::GetMessagingInterface()->RegisterListener(OnMessage);
     return true;
 }

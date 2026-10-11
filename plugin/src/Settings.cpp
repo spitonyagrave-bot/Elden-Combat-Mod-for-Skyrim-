@@ -61,5 +61,8 @@ void Settings::Load()
     blockStart = ReadEvent(L"BlockStart", "blockStart");
     blockStop = ReadEvent(L"BlockStop", "blockStop");
 
+    poseDriver = GetPrivateProfileIntW(L"Pose", L"Enabled", 1, kPath) != 0;
+    poseHook = static_cast<std::int32_t>(GetPrivateProfileIntW(L"Pose", L"Hook", 1, kPath));
+
     coreHitDetection = GetPrivateProfileIntW(L"General", L"CoreHitDetection", 0, kPath) != 0;
 }

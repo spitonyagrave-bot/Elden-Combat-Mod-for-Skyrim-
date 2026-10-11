@@ -1,6 +1,7 @@
 #include "Bridge.h"
 
 #include "Input.h"
+#include "PoseDriver.h"
 #include "Settings.h"
 
 static_assert(sizeof(ErInput) == 32);
@@ -39,6 +40,7 @@ void Bridge::Update(RE::PlayerCharacter* a_this, float a_delta)
 {
     _Update(a_this, a_delta);
     Tick(a_this, a_delta);
+    PoseDriver::AfterPlayerUpdate(a_this, a_delta);
 }
 
 void Bridge::Tick(RE::PlayerCharacter* player, float delta)
@@ -70,6 +72,7 @@ void Bridge::Tick(RE::PlayerCharacter* player, float delta)
         return;
     }
 
+    std::unique_lock lock(CoreLock());
     if (!combat) {
         combat = er_create(ToEr(player->GetPosition()));
     }
@@ -91,6 +94,8 @@ void Bridge::Tick(RE::PlayerCharacter* player, float delta)
 
     ErOutput out{};
     er_update(combat, delta, &controls, &world, &out);
+    PoseDriver::SetSource(combat);
+    lock.unlock();
     if (out.state != ER_STATE_GROUND && out.state != ER_STATE_DEAD) {
         player->SetRotationZ(out.heading);
     }
@@ -149,8 +154,12 @@ void Bridge::SetCombatMode(bool on)
         controls->attackBlockHandler->SetInputEventHandlingEnabled(!on);
     }
     if (!on && combat) {
-        er_destroy(combat);
-        combat = nullptr;
+        {
+            std::lock_guard lock(CoreLock());
+            PoseDriver::SetSource(nullptr);
+            er_destroy(combat);
+            combat = nullptr;
+        }
         lastSerial = 0;
         lastState = ER_STATE_GROUND;
         if (blocking) {

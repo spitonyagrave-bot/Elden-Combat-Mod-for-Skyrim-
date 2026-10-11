@@ -16,6 +16,14 @@ class Bridge
 public:
     static void Install();
 
+    // Held while the simulation is stepped, read or destroyed: the pose
+    // driver reads it from the animation update.
+    static std::mutex& CoreLock()
+    {
+        static std::mutex lock;
+        return lock;
+    }
+
 private:
     static void Update(RE::PlayerCharacter* a_this, float a_delta);
     static inline REL::Relocation<decltype(Update)> _Update;

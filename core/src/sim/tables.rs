@@ -94,6 +94,21 @@ impl Tables {
         }
     }
 
+    /// Every animation clip this table plays, each once, in a stable order:
+    /// what the pose driver must find in the baked animations.
+    pub fn sources(&self) -> Vec<&'static str> {
+        let mut out: Vec<&'static str> = Vec::new();
+        let actions = self.base.iter().chain(&self.attacks).flatten().map(|a| a.source);
+        let air = self.air.iter().chain(&self.air_paired).flatten().map(|a| a.source);
+        let swaps = self.swaps.iter().flat_map(|s| [s.start, s.end]);
+        for name in actions.chain(air).chain(swaps) {
+            if !out.contains(&name) {
+                out.push(name);
+            }
+        }
+        out
+    }
+
     /// Attacks are not in this table (`ActionDef`s for them come from
     /// `attack`), so they get `None`, as from the stand-in.
     pub fn base(&self, id: ActionId) -> Option<ActionDef> {

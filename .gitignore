@@ -4,6 +4,8 @@ core/target/
 core/src/sim/extracted.rs
 # The same data, dumped for the DLL to load at run time.
 *.erdata
+*.eranims
+player_anims.bin
 # C++ build
 plugin/build/
 plugin/dist/SKSE/Plugins/*.dll
