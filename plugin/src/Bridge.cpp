@@ -628,6 +628,18 @@ void Bridge::CoreHits(RE::PlayerCharacter* player, const ErOutput& out)
         const float before = actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kHealth);
         Hits::Strike(player, actor, out.hit_motion, leftHand, power);
         const float after = actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kHealth);
+        // Heavy weapons and heavy swings always rock the target (Skyrim's
+        // own hit doesn't stagger outside power attacks): a flinch for a
+        // two-hander's light swing, a full stagger for heavy ones.
+        if (!actor->IsDead() && after > 0.0f) {
+            auto* weapon = player->GetEquippedObject(leftHand);
+            auto* weap = weapon ? weapon->As<RE::TESObjectWEAP>() : nullptr;
+            const bool heavyWeapon = weap && (weap->IsTwoHandedSword() || weap->IsTwoHandedAxe());
+            if (heavyWeapon || power) {
+                const float base = power ? Settings::Get().staggerHeavy : Settings::Get().staggerLight;
+                Stagger(player, actor, std::clamp(base * std::max(out.hit_motion, 0.5f), 0.0f, 1.0f));
+            }
+        }
         RE::ShakeCamera(Settings::Get().hitShake * out.hit_motion, me, 0.25f);
         if (!Settings::Get().hitSound.empty()) {
             RE::PlaySound(Settings::Get().hitSound.c_str());
@@ -635,6 +647,22 @@ void Bridge::CoreHits(RE::PlayerCharacter* player, const ErOutput& out)
         logger::info("Core hit {} with the {} hand: motion {:.2f}{}, health {:.0f} -> {:.0f}", actor->GetName(),
             leftHand ? "left" : "right", out.hit_motion, power ? " (power)" : "", before, after);
     }
+}
+
+void Bridge::Stagger(RE::PlayerCharacter* player, RE::Actor* target, float magnitude)
+{
+    if (magnitude <= 0.0f) {
+        return;
+    }
+    // Direction of the blow in the target's frame, 0..1 (0 from the front).
+    const auto from = player->GetPosition() - target->GetPosition();
+    float angle = WrapAngle(std::atan2(from.x, from.y) - target->GetAngleZ());
+    if (angle < 0.0f) {
+        angle += 2.0f * 3.14159265f;
+    }
+    target->SetGraphVariableFloat("staggerDirection"sv, angle / (2.0f * 3.14159265f));
+    target->SetGraphVariableFloat("staggerMagnitude"sv, magnitude);
+    target->NotifyAnimationGraph("staggerStart");
 }
 
 void Bridge::PlaySwing(RE::PlayerCharacter* player, const ErOutput& out)

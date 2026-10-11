@@ -113,6 +113,8 @@ void Settings::Load()
     lockFlickMouse = ReadFloat(L"LockOn", L"FlickMouse", lockFlickMouse);
     swingSound = GetPrivateProfileIntW(L"Impact", L"SwingSound", 1, kPath) != 0;
     landShake = ReadFloat(L"Impact", L"LandShake", landShake);
+    staggerLight = ReadFloat(L"Impact", L"StaggerLight", staggerLight);
+    staggerHeavy = ReadFloat(L"Impact", L"StaggerHeavy", staggerHeavy);
     {
         auto lower = [](std::string v) {
             std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });

@@ -73,6 +73,10 @@ struct Settings
     // [Impact] SwingSound: the weapon whooshes when a swing goes live.
     // LandShake: camera shake when a jump attack lands.
     bool swingSound = true;
+    // Stagger on hit with a two-handed weapon (light swings) and for every
+    // heavy, charged or jump attack, times the swing's motion value.
+    float staggerLight = 0.25f;
+    float staggerHeavy = 0.6f;
     float landShake = 0.8f;
 
     // [LockOn], metres.

@@ -43,6 +43,8 @@ private:
     static RE::Actor* SwitchTarget(RE::PlayerCharacter* player, RE::Actor* current, int side);
     // A whoosh when a swing goes live (Skyrim's swing sounds come from its
     // own attack animations, which don't play in Elden Ring mode).
+    // Rocks the target back (Skyrim's stagger, 0..1: a flinch to a full stagger).
+    static void Stagger(RE::PlayerCharacter* player, RE::Actor* target, float magnitude);
     static void PlaySwing(RE::PlayerCharacter* player, const ErOutput& out);
     static RE::Actor* FindLockTarget(RE::PlayerCharacter* player, float heading);
     static RE::Actor* UpdateLock(RE::PlayerCharacter* player, bool pressed, float heading);
