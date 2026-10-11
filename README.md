@@ -17,6 +17,15 @@ The combat logic is the engine-free simulation from
   Skyrim's own sprint, jump and attack/block handlers are paused for that time.
   Each action the core starts plays through the animation event set in
   `ERCombat.ini`. By default those events drive TK Dodge and MCO/ADXP.
+- **Your weapons pick the Elden Ring moveset.** Sword → Longsword, greatsword →
+  Claymore, dagger → Dagger, war axe → Battle Axe, battleaxe → Greataxe, mace →
+  Club, warhammer → Great Hammer, fists → Fist; shield and torch in the left
+  hand. Modded types are found by keyword first: WeapTypeKatana → Uchigatana,
+  WeapTypeRapier → Rapier, WeapTypeWhip → Whip, WeapTypeQtrStaff → Twinblade,
+  WeapTypeSpear → Short Spear, WeapTypePike → Great Spear, WeapTypeHalberd →
+  Halberd, WeapTypeClaw → Claw, WeapTypeScythe → Reaper. The same class in both
+  hands is a power stance. **Bows, crossbows, magic staffs and spells stay
+  Skyrim's**: with one in either hand, combat mode stays off.
 - **Activate, movement, shouts, sneaking and menus always stay with Skyrim**, so
   doors, loot and dialogue keep working mid-fight.
 - **I-frames come from the core's real roll timings.** They're set through the
@@ -57,6 +66,39 @@ compiles and the tests run. To use the real data:
    `python tools/setup.py`).
 2. Copy its generated `src/sim/extracted.rs` to `core/src/sim/extracted.rs`
    and rebuild. `build.rs` notices it and switches over automatically.
+
+The DLL from CI (or any build without `extracted.rs`) loads the real table at
+run time instead, from `ERCombat.erdata` next to `ERCombat.dll`. To make that
+file, with `core/src/sim/extracted.rs` in place:
+
+```
+cd core
+cargo run --release --bin er_dump -- ERCombat.erdata
+```
+
+and copy `ERCombat.erdata` into `Data/SKSE/Plugins` (or the mod's
+`SKSE/Plugins`). `ERCombat.log` says whether it loaded; without it the core
+runs on the stand-in. To run the stand-in's tests while `extracted.rs` is
+present, set `ER_COMBAT_STUB=1`.
+
+### Elden Ring animations on your character (pose driver)
+
+With `ERCombat.eranims` next to `ERCombat.dll`, the plugin plays the real
+Elden Ring animation of whatever the core is doing (idle, walk, run, rolls,
+every attack, jumps, guard) on your own character, retargeted at run time to
+your skeleton (vanilla or XPMSE). Make it from upstream's baked
+`assets/player_anims.bin`:
+
+```
+cd core
+cargo run --release --bin er_anims -- path\to\player_anims.bin ERCombat.eranims
+```
+
+It checks the file and reports any clip of the action table that is missing.
+Copy `ERCombat.eranims` into `Data/SKSE/Plugins`. `ERCombat.log` says whether
+it loaded, how many bones of your skeleton were found and driven, and which
+clip plays. `[Pose] Enabled=0` in `ERCombat.ini` switches it off. To check the
+retarget against the real animations: `ER_ANIMS=path\to\player_anims.bin cargo test`.
 
 Please keep generated data out of forks and uploads, as upstream asks.
 

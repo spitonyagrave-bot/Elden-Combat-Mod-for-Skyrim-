@@ -8,4 +8,5 @@
 //! which action is playing and whether a swing is live.
 
 pub mod ffi;
+pub mod pose;
 pub mod sim;

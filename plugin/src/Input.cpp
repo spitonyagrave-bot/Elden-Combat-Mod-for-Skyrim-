@@ -44,6 +44,12 @@ ErInput Input::Take(float cameraHeading)
     out.heavy = heavy.Take();
     out.guard = guard.Take();
     out.walk = walk;
+    out.crouch = crouchPressed;
+    out.lock = lockPressed;
+    // Edges: each press counts once. (Leaving lockPressed set toggled the
+    // lock-on every frame after the first press.)
+    crouchPressed = false;
+    lockPressed = false;
     return out;
 }
 
@@ -56,9 +62,11 @@ RE::BSEventNotifyControl Input::ProcessEvent(RE::InputEvent* const* a_event, RE:
     const auto* userEvents = RE::UserEvents::GetSingleton();
 
     for (auto* event = *a_event; event; event = event->next) {
-        if (auto* stick = event->AsThumbstickEvent(); stick && stick->IsLeft()) {
-            stickX = stick->xValue;
-            stickY = stick->yValue;
+        if (event->GetEventType() == RE::INPUT_EVENT_TYPE::kThumbstick) {
+            if (auto* stick = static_cast<RE::ThumbstickEvent*>(event); stick->IsLeft()) {
+                stickX = stick->xValue;
+                stickY = stick->yValue;
+            }
             continue;
         }
         auto* button = event->AsButtonEvent();
@@ -77,17 +85,33 @@ RE::BSEventNotifyControl Input::ProcessEvent(RE::InputEvent* const* a_event, RE:
             right = down;
         } else if (user == userEvents->activate && button->IsDown()) {
             activatePressed = true;
+        } else if (user == userEvents->sneak && button->IsDown()) {
+            // Sneak still goes to Skyrim; the core crouches along with it.
+            crouchPressed = true;
         }
 
         // Our own keys, by scan code; mouse buttons are offset by 256.
         std::uint32_t code = button->GetIDCode();
         if (button->GetDevice() == RE::INPUT_DEVICE::kMouse) {
             code += 256;
+        } else if (button->GetDevice() == RE::INPUT_DEVICE::kGamepad) {
+            // Only lock-on so far (R3, as in Elden Ring); TODO: the rest.
+            if (code == settings.lockPad && button->IsDown()) {
+                lockPressed = true;
+            }
+            continue;
         } else if (button->GetDevice() != RE::INPUT_DEVICE::kKeyboard) {
-            continue;  // TODO: gamepad bindings.
+            continue;
         }
 
-        if (code == settings.dodgeKey) {
+        if (code == settings.toggleKey) {
+            // Not while typing in the console or a text field, or in menus.
+            auto* ui = RE::UI::GetSingleton();
+            if (button->IsDown() && ui && !ui->GameIsPaused() && !ui->IsMenuOpen(RE::Console::MENU_NAME)) {
+                enabled = !enabled;
+                toggled = true;
+            }
+        } else if (code == settings.dodgeKey) {
             dodge.Set(down);
         } else if (code == settings.jumpKey) {
             jump.Set(down);
@@ -100,6 +124,8 @@ RE::BSEventNotifyControl Input::ProcessEvent(RE::InputEvent* const* a_event, RE:
             (heavyModifierHeld || heavy.held ? heavy : light).Set(down);
         } else if (code == settings.guardKey) {
             guard.Set(down);
+        } else if (code == settings.lockKey && button->IsDown()) {
+            lockPressed = true;
         }
     }
     return RE::BSEventNotifyControl::kContinue;

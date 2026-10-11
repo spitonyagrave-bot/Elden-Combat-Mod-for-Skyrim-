@@ -92,3 +92,62 @@ This decides what we can share publicly.
 
 - **A GitHub repo.** I can't create one from here. Make an empty repo (for example `skyrim-er-combat`) and connect it, and I'll push everything there.
 - **Your PC for building and testing.** The plugin needs Windows with Visual Studio, Skyrim SE/AE with SKSE, Elden Ring (for the data the core needs) and Gate to Sovngarde. I can run builds and tests there through a session on your device once you allow it.
+
+## 7. Full Elden Ring takeover (Joel, 2026-10-11)
+
+Joel's direction: pressing **Ä** switches Skyrim's whole combat and movement over to Elden Ring's, with every moveset, on every Skyrim weapon type. Every other combat and movement mod steps aside while it is on. 360° movement stays, and Elden Ring's own movement provides it anyway.
+
+### What "switching the other mods off" can mean
+
+SKSE plugins and behavior patches (MCO, TK Dodge, Precision, TDM, Elden Parry, OAR submods) can't be unloaded while the game runs. What we can do is make sure **none of them gets anything to work with** while Elden Ring mode is on:
+
+- **We drive the player's pose ourselves.** Every frame, after Skyrim's animation update, the plugin writes the retargeted Elden Ring pose straight onto the player's skeleton. The behavior graph underneath keeps idling, so MCO, BFCO, TK Dodge, SCAR and OAR replacers never see an attack or dodge event, and they never play anything.
+- **We own movement.** The core's root motion moves the player, so Skyrim's own movement, and TDM's, are bypassed. TDM's API (`RequestDisableDirectionalMovement`, yaw control) switches it off for the duration, and Elden Ring's own lock-on and 360° movement take its place. The camera stays with SmoothCam or vanilla.
+- **We own hits.** The core's weapon sweeps decide hits (phase B). Damage still goes through Skyrim's hit path, so perks, difficulty and gore keep working. Precision, Elden Parry and the block mods never fire because no Skyrim attack is ever started. Hits on the player go through the core first (i-frames, guard, poise).
+- **Off means off.** Pressing Ä again hands everything back: graph events flow again, TDM is re-enabled, and the list plays exactly as before.
+
+### Weapons
+
+Upstream already has 24 Elden Ring classes, each one- and two-handed, with power stance and left-hand chains. Skyrim's weapon types map onto them:
+
+| Skyrim | Elden Ring class |
+|---|---|
+| Dagger | Dagger |
+| Sword | Longsword |
+| War Axe | Battle Axe |
+| Mace | Club |
+| Greatsword | Claymore |
+| Battleaxe | Greataxe |
+| Warhammer | Great Hammer |
+| Hand to hand | Fist |
+| Shield / Torch (left hand) | Shield / Torch |
+| Modded types by keyword (Animated Armoury and similar): katana, rapier, spear, halberd, scythe, claw, whip, quarterstaff | Uchigatana, Rapier, Short Spear, Halberd, Reaper, Claw, Whip, Twinblade |
+
+Bows, crossbows, staves and spells aren't in upstream. With one of those equipped, Elden Ring mode passes everything through to Skyrim.
+
+### What it needs from Joel's Elden Ring
+
+Running upstream's `tools/setup.py` on his own copy creates two files:
+- `src/sim/extracted.rs`: the action table (timings, i-frames, cancel windows, root motion, stamina). The core is built against it.
+- `assets/player_anims.bin`: the baked animations on Elden Ring's skeleton. Our converter retargets them once onto Skyrim's skeleton and writes `Data/SKSE/Plugins/ERCombat/anims.bin` on Joel's PC.
+
+Neither file is ever committed or uploaded, so CI keeps building against the stub. The real core DLL is built from Joel's `extracted.rs` outside the public repo.
+
+### New build order
+
+1. Real action table: build the core with Joel's `extracted.rs`.
+2. Skeleton retarget: map Elden Ring's c0000 bones to Skyrim's, and write the converter.
+3. Pose driver: sample the current action's animation in the core, and write bones each frame in the bridge. Root motion moves the player.
+4. Isolation switches: stop graph events, turn TDM off through its API, hold Skyrim's attack/block/sprint/jump handlers.
+5. Weapon mapping from the table above, including two-handing and power stance.
+6. Hits both ways through the core, with damage through Skyrim.
+7. Lock-on target fed to SmoothCam and TrueHUD.
+
+## 8. Features after the takeover (Joel, 2026-10-11)
+
+- **Enemies fight the Elden Ring way too.** Humanoid NPCs reuse the player movesets (same skeleton) with ER timings, rolls and posture. Creatures keep Skyrim animations but get posture and stagger.
+- **Posture break like Sekiro.** When posture breaks: guard break plus the Elden Ring critical stab. At zero HP: Skyrim killmove.
+- **Ashes of War.** Each weapon class gets a default skill on one key, paid with Magicka as FP. A lesser power or MCM page swaps the skill.
+- **Boss health bar.** Bosses and dragons get an ER-style bar (TrueHUD boss bar). Music already comes from the modlist.
+- Not now: mounted combat. Flasks: Joel already has a mod for that.
+- **SkyParkour stays working (Joel, 2026-10-11).** Joel uses SkyParkour V for climbing: standing at a ledge and pressing jump climbs or vaults over it. In ER mode the jump key must still reach SkyParkour at a ledge. Before an ER jump, run our own ledge check (a ray forward at chest height, then a free space check above the ledge, matching SkyParkour's reach). At a ledge: no ER jump, the game's jump input passes through untouched, and our pose driver pauses until SkyParkour's climb animation ends. Everywhere else: ER jump.

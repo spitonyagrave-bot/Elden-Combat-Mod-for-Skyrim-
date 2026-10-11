@@ -7,14 +7,17 @@ use glam::Vec3;
 
 pub mod data;
 pub mod dummy;
+pub mod erdata;
 // The real action table is generated from the player's own copy of Elden Ring
 // and never committed. Without it, a small stand-in keeps everything building
-// and testable; see `extracted_stub.rs`.
+// and testable; see `extracted_stub.rs`. Either way the simulation reads it
+// through `tables`, which prefers a table loaded at run time from a file.
 #[cfg_attr(er_data, path = "extracted.rs")]
 #[cfg_attr(not(er_data), path = "extracted_stub.rs")]
 pub mod extracted;
 pub mod level;
 pub mod player;
+pub mod tables;
 // Upstream's behaviour tests check the game's real timings, so they only
 // make sense against the real action table.
 #[cfg(all(test, er_data))]

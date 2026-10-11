@@ -1,0 +1,50 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Core tests
+        working-directory: core
+        run: cargo test
+
+      - name: Core release build
+        working-directory: core
+        run: cargo build --release
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - uses: seanmiddleditch/gha-setup-ninja@v5
+
+      # The runner's own vcpkg clone. The MSVC environment above points
+      # VCPKG_ROOT at Visual Studio's bundled copy, which has no bootstrap.
+      - name: Update vcpkg
+        shell: pwsh
+        run: |
+          $root = $env:VCPKG_INSTALLATION_ROOT
+          git -C $root pull --quiet
+          & "$root\bootstrap-vcpkg.bat" -disableMetrics
+          "VCPKG_ROOT=$root" >> $env:GITHUB_ENV
+
+      - name: Configure plugin
+        working-directory: plugin
+        run: cmake --preset release
+
+      - name: Build plugin
+        working-directory: plugin
+        run: cmake --build --preset release
+
+      - name: Upload mod files
+        uses: actions/upload-artifact@v4
+        with:
+          name: ERCombat-mod
+          path: plugin/dist/

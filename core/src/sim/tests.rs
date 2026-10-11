@@ -16,7 +16,7 @@ const MEDIUM_ROLL: ActionId = ActionId::Roll(Load::Medium, Dir::Front);
 
 /// An attack in the default moveset: the Longsword, one-handed.
 fn atk(kind: AttackKind) -> ActionId {
-    ActionId::Attack(Moveset { weapon: DEFAULT_WEAPON as u8, two_hand: false }, kind)
+    ActionId::Attack(Moveset { weapon: default_weapon() as u8, two_hand: false }, kind)
 }
 
 fn world() -> World {
@@ -90,7 +90,7 @@ fn holding_dodge_sprints_and_release_does_not_roll() {
     w.step(&Input { dodge: DOWN, ..forward() });
     run(&mut w, Input { dodge: HELD, ..forward() }, 60);
     assert!(w.player.sprinting);
-    assert!((w.player.speed - SPRINT_SPEED).abs() < 1e-3);
+    assert!((w.player.speed - sprint_speed()).abs() < 1e-3);
     w.step(&Input { dodge: UP, ..forward() });
     run(&mut w, forward(), 5);
     assert!(action(&w).is_none());
@@ -188,7 +188,7 @@ fn light_chain_runs_five_deep_then_loops() {
     let mut seen = Vec::new();
     for _ in 0..700 {
         w.step(&Input { light: DOWN, ..idle() });
-        w.player.stamina = MAX_STAMINA;
+        w.player.stamina = max_stamina();
         if let Some(current) = id(&w) {
             if seen.last() != Some(&current) {
                 seen.push(current);
@@ -215,9 +215,9 @@ fn attack_stamina_is_taken_when_the_hit_comes_out() {
     w.step(&Input { light: DOWN, ..idle() });
     let hit = atk(AttackKind::Light1).def().hits[0];
     run_to_frame(&mut w, idle(), hit.from - 0.5);
-    assert_eq!(w.player.stamina, MAX_STAMINA);
+    assert_eq!(w.player.stamina, max_stamina());
     w.step(&idle());
-    assert_eq!(w.player.stamina, MAX_STAMINA - 12.0);
+    assert_eq!(w.player.stamina, max_stamina() - 12.0);
 }
 
 #[test]
@@ -266,7 +266,7 @@ fn tapped_heavy_releases_and_held_heavy_charges() {
             }
             w.step(&Input { heavy: hold, ..idle() });
         }
-        (ids, best, MAX_STAMINA - w.player.stamina)
+        (ids, best, max_stamina() - w.player.stamina)
     };
     let (ids, mv, _) = swing(false);
     assert_eq!(ids, [atk(AttackKind::Heavy1Charge), atk(AttackKind::Heavy1)]);
@@ -315,7 +315,7 @@ fn jump_attack_lands_into_its_recovery() {
     }
     assert_eq!(id(&w), Some(atk(AttackKind::JumpHeavyLand)));
     assert!(w.player.air_attack.is_none());
-    assert_eq!(MAX_STAMINA - w.player.stamina, JUMP_COST + 20.0, "charged once, not twice");
+    assert_eq!(max_stamina() - w.player.stamina, JUMP_COST + 20.0, "charged once, not twice");
 }
 
 #[test]
@@ -333,14 +333,14 @@ fn sprinting_only_costs_stamina_in_combat() {
     let mut w = world();
     w.step(&Input { dodge: DOWN, ..forward() });
     run(&mut w, Input { dodge: HELD, ..forward() }, 120);
-    assert_eq!(w.player.stamina, MAX_STAMINA);
+    assert_eq!(w.player.stamina, max_stamina());
 
     let mut w = world();
     w.dummy.aggressive = true;
     w.player.pos = Vec3::new(10.0, 0.0, 0.0);
     w.step(&Input { dodge: DOWN, mv: Vec2::new(1.0, 0.0), ..idle() });
     run(&mut w, Input { dodge: HELD, mv: Vec2::new(1.0, 0.0), ..idle() }, 60);
-    assert!(w.player.stamina < MAX_STAMINA - 5.0);
+    assert!(w.player.stamina < max_stamina() - 5.0);
 }
 
 #[test]
@@ -393,8 +393,8 @@ fn block_then_heavy_is_a_guard_counter() {
         }
     }
     assert!(blocked, "log: {:?}", w.log);
-    assert_eq!(w.player.hp, MAX_HP);
-    assert!(w.player.stamina < MAX_STAMINA);
+    assert_eq!(w.player.hp, max_hp());
+    assert!(w.player.stamina < max_stamina());
     w.step(&Input { heavy: DOWN, ..idle() });
     let mut countered = false;
     for _ in 0..40 {
@@ -418,7 +418,7 @@ fn unguarded_hit_staggers_and_roll_iframes_avoid_it() {
         }
     }
     assert!(hit);
-    assert!(w.player.hp < MAX_HP);
+    assert!(w.player.hp < max_hp());
 
     // Same setup, but roll into the swing just before it lands.
     let mut w = world();
@@ -435,7 +435,7 @@ fn unguarded_hit_staggers_and_roll_iframes_avoid_it() {
     w.step(&Input { dodge: DOWN, ..forward() });
     w.step(&Input { dodge: UP, ..forward() });
     run(&mut w, idle(), 60);
-    assert_eq!(w.player.hp, MAX_HP, "log: {:?}", w.log);
+    assert_eq!(w.player.hp, max_hp(), "log: {:?}", w.log);
     assert!(w.log.iter().any(|l| l.starts_with("Dodged")));
 }
 
@@ -460,15 +460,15 @@ fn player_attack_damages_the_dummy_once_per_swing() {
     w.step(&Input { light: DOWN, ..idle() });
     run(&mut w, idle(), 160);
     let expected = super::dummy::MAX_HP - 110.0 * atk(AttackKind::Light1).def().hits[0].mv;
-    assert_eq!(WEAPONS[DEFAULT_WEAPON].attack, 110.0);
+    assert_eq!(weapons()[default_weapon()].attack, 110.0);
     assert!((w.dummy.hp - expected).abs() < 1e-3);
 }
 
 #[test]
 fn extracted_speeds_are_the_games() {
-    assert!((WALK_SPEED - 1.5).abs() < 0.01);
-    assert!((RUN_SPEED - 4.012).abs() < 0.01);
-    assert!((SPRINT_SPEED - 6.035).abs() < 0.01);
+    assert!((walk_speed() - 1.5).abs() < 0.01);
+    assert!((run_speed() - 4.012).abs() < 0.01);
+    assert!((sprint_speed() - 6.035).abs() < 0.01);
 }
 
 /// Starts a grip or weapon change and steps until it has fully played out.
@@ -486,7 +486,7 @@ fn two_handing_the_weapon_switches_to_its_two_handed_moveset() {
     change(&mut w, Input { two_hand_right: true, ..idle() });
     assert_eq!(w.player.grip, Grip::TwoHandRight);
     w.step(&Input { light: DOWN, ..idle() });
-    let two_handed = Moveset { weapon: DEFAULT_WEAPON as u8, two_hand: true };
+    let two_handed = Moveset { weapon: default_weapon() as u8, two_hand: true };
     assert_eq!(id(&w), Some(ActionId::Attack(two_handed, AttackKind::Light1)));
     assert_eq!(id(&w).unwrap().def().source, "a023_032000");
 
@@ -516,15 +516,15 @@ fn two_handing_the_left_hand_uses_the_shield_moveset() {
 fn weapon_swap_cycles_through_everything_but_the_shield() {
     let mut w = world();
     let mut seen = vec![w.player.weapon];
-    for _ in 0..SHIELD {
+    for _ in 0..shield() {
         change(&mut w, Input { next_weapon: true, ..idle() });
         seen.push(w.player.weapon);
     }
     assert_eq!(seen.first(), seen.last(), "back where it started");
-    assert!(!seen.contains(&SHIELD));
+    assert!(!seen.contains(&shield()));
     seen.sort();
     seen.dedup();
-    assert_eq!(seen.len(), SHIELD);
+    assert_eq!(seen.len(), shield());
 }
 
 #[test]
@@ -541,7 +541,7 @@ fn a_grip_change_takes_time_and_does_not_stop_movement() {
     let mut applied_at = None;
     while let Some(swap) = w.player.swap {
         assert!(matches!(w.player.state, State::Ground));
-        assert!((w.player.speed - RUN_SPEED).abs() < 1e-3, "still running");
+        assert!((w.player.speed - run_speed()).abs() < 1e-3, "still running");
         if applied_at.is_none() && w.player.grip == Grip::TwoHandRight {
             applied_at = Some(swap.f);
         }
@@ -566,7 +566,7 @@ fn attacks_wait_for_the_hands_to_be_free() {
     let free = w.player.swap.unwrap().f;
     assert_eq!(free, def.start_len + def.free_from);
     w.step(&idle());
-    let two_handed = Moveset { weapon: DEFAULT_WEAPON as u8, two_hand: true };
+    let two_handed = Moveset { weapon: default_weapon() as u8, two_hand: true };
     assert_eq!(id(&w), Some(ActionId::Attack(two_handed, AttackKind::Light1)), "and it uses the new grip");
 }
 
@@ -589,10 +589,10 @@ fn every_moveset_has_its_core_attacks() {
         Light1, Light2, Light3, Light4, Light5, Light6, RunLight, RunHeavy, RollAttack, CrouchAttack,
         BackstepAttack, Heavy1Charge, Heavy1, Heavy2Charge, Heavy2, GuardCounter, JumpLightLand, JumpHeavyLand,
     ];
-    for weapon in 0..WEAPONS.len() {
+    for weapon in 0..weapons().len() {
         for two_hand in [false, true] {
             let moveset = Moveset { weapon: weapon as u8, two_hand };
-            let name = WEAPONS[weapon].name;
+            let name = weapons()[weapon].name;
             for kind in [Light1, Light2, Heavy1Charge, Heavy1, RunHeavy, BackstepAttack] {
                 assert!(moveset.has(kind), "{name} {two_hand} {kind:?}");
             }
@@ -611,11 +611,11 @@ fn every_moveset_has_its_core_attacks() {
 fn light_chain_length_depends_on_the_weapon() {
     let chain = |name: &str| {
         let mut w = world();
-        w.player.weapon = WEAPONS.iter().position(|info| info.name == name).unwrap();
+        w.player.weapon = weapons().iter().position(|info| info.name == name).unwrap();
         let mut seen = Vec::new();
         for _ in 0..900 {
             w.step(&Input { light: DOWN, ..idle() });
-            w.player.stamina = MAX_STAMINA;
+            w.player.stamina = max_stamina();
             if let Some(ActionId::Attack(_, kind)) = id(&w) {
                 if seen.last() != Some(&kind) {
                     seen.push(kind);
@@ -631,11 +631,11 @@ fn light_chain_length_depends_on_the_weapon() {
 
 #[test]
 fn every_moveset_can_jump_attack() {
-    for weapon in 0..WEAPONS.len() {
+    for weapon in 0..weapons().len() {
         for two_hand in [false, true] {
             let moveset = Moveset { weapon: weapon as u8, two_hand };
             for heavy in [false, true] {
-                let air = moveset.air(heavy).unwrap_or_else(|| panic!("{} {two_hand} {heavy}", WEAPONS[weapon].name));
+                let air = moveset.air(heavy).unwrap_or_else(|| panic!("{} {two_hand} {heavy}", weapons()[weapon].name));
                 assert!(air.from < air.to);
             }
         }
@@ -648,11 +648,11 @@ fn crouching_has_its_own_walk_and_run_speeds() {
     w.step(&Input { crouch: true, ..idle() });
     run(&mut w, forward(), 60);
     assert!(w.player.crouching);
-    assert!((w.player.speed - CROUCH_RUN_SPEED).abs() < 1e-3);
-    assert!((CROUCH_RUN_SPEED - 2.98).abs() < 0.01);
+    assert!((w.player.speed - crouch_run_speed()).abs() < 1e-3);
+    assert!((crouch_run_speed() - 2.98).abs() < 0.01);
     run(&mut w, Input { walk: true, ..forward() }, 60);
-    assert!((w.player.speed - CROUCH_WALK_SPEED).abs() < 1e-3);
-    assert!((CROUCH_WALK_SPEED - 1.37).abs() < 0.01);
+    assert!((w.player.speed - crouch_walk_speed()).abs() < 1e-3);
+    assert!((crouch_walk_speed() - 1.37).abs() < 0.01);
 }
 
 #[test]
@@ -790,7 +790,7 @@ fn light_after_an_opener_continues_with_the_second_swing() {
         let mut seen = Vec::new();
         for _ in 0..400 {
             w.step(&Input { dodge: HELD, light: DOWN, ..forward() });
-            w.player.stamina = MAX_STAMINA;
+            w.player.stamina = max_stamina();
             if let Some(ActionId::Attack(moveset, kind)) = id(&w) {
                 assert_eq!(moveset.two_hand, two_hand);
                 if seen.last() != Some(&kind) {
@@ -807,7 +807,7 @@ fn light_after_an_opener_continues_with_the_second_swing() {
     let mut seen = Vec::new();
     for _ in 0..300 {
         w.step(&Input { light: DOWN, ..idle() });
-        w.player.stamina = MAX_STAMINA;
+        w.player.stamina = max_stamina();
         if let Some(ActionId::Attack(_, kind)) = id(&w) {
             if seen.last() != Some(&kind) {
                 seen.push(kind);
@@ -819,8 +819,8 @@ fn light_after_an_opener_continues_with_the_second_swing() {
 
 #[test]
 fn every_weapon_has_a_length_for_its_reach() {
-    assert_eq!(WEAPONS[SHIELD].name, "Shield");
-    assert_eq!(SHIELD, WEAPONS.len() - 1);
+    assert_eq!(weapons()[shield()].name, "Shield");
+    assert_eq!(shield(), weapons().len() - 1);
 }
 
 #[test]
@@ -833,7 +833,7 @@ fn dodge_and_jump_cost_what_the_game_charges() {
         } else {
             w.step(&Input { jump: DOWN, ..inp });
         }
-        MAX_STAMINA - w.player.stamina
+        max_stamina() - w.player.stamina
     };
     assert_eq!(spent(forward(), true), 12.0, "roll");
     assert_eq!(spent(idle(), true), 8.0, "backstep");
@@ -843,7 +843,7 @@ fn dodge_and_jump_cost_what_the_game_charges() {
 #[test]
 fn multi_hit_attacks_land_and_charge_each_hit() {
     let mut w = world();
-    w.player.weapon = WEAPONS.iter().position(|info| info.name == "Twinblade").unwrap();
+    w.player.weapon = weapons().iter().position(|info| info.name == "Twinblade").unwrap();
     w.player.grip = Grip::TwoHandRight;
     w.player.pos = Vec3::new(0.0, 0.0, 6.5);
     w.step(&Input { light: DOWN, ..idle() });
@@ -857,12 +857,12 @@ fn multi_hit_attacks_land_and_charge_each_hit() {
     assert!((dealt - expected).abs() < 1e-2, "dealt {dealt}, expected {expected}");
     // Idle since: only check what the swing took, at the moment it took it.
     let mut w = world();
-    w.player.weapon = WEAPONS.iter().position(|info| info.name == "Twinblade").unwrap();
+    w.player.weapon = weapons().iter().position(|info| info.name == "Twinblade").unwrap();
     w.player.grip = Grip::TwoHandRight;
     w.step(&Input { light: DOWN, ..idle() });
     run_to_frame(&mut w, idle(), def.hits[1].from);
     let costs: f32 = def.hits.iter().map(|hit| hit.stamina).sum();
-    assert_eq!(MAX_STAMINA - w.player.stamina, costs);
+    assert_eq!(max_stamina() - w.player.stamina, costs);
     assert_eq!(costs, 16.0);
 }
 
@@ -940,7 +940,7 @@ fn the_dummy_escalates_through_its_attacks() {
     let mut seen = Vec::new();
     for _ in 0..3000 {
         w.step(&idle());
-        w.player.hp = MAX_HP;
+        w.player.hp = max_hp();
         w.player.pos = Vec3::new(0.0, 0.0, 5.0);
         if let Some(ActionId::Hurt(level, _)) = id(&w) {
             if seen.last() != Some(&level) {
@@ -1015,7 +1015,7 @@ fn a_swing_only_hits_when_the_blade_reaches_the_target() {
 
     // Standing beside the swing's path is not enough: a thrust past the dummy misses.
     let mut w = world();
-    w.player.weapon = WEAPONS.iter().position(|info| info.name == "Rapier").unwrap();
+    w.player.weapon = weapons().iter().position(|info| info.name == "Rapier").unwrap();
     w.player.pos = Vec3::new(2.0, 0.0, 6.5);
     w.step(&Input { light: DOWN, ..idle() });
     run(&mut w, idle(), 120);
@@ -1023,7 +1023,7 @@ fn a_swing_only_hits_when_the_blade_reaches_the_target() {
 }
 
 fn weapon_named(name: &str) -> usize {
-    WEAPONS.iter().position(|info| info.name == name).unwrap()
+    weapons().iter().position(|info| info.name == name).unwrap()
 }
 
 const GUARD_TAP: Input = Input {
@@ -1077,7 +1077,7 @@ fn the_same_class_in_each_hand_fights_as_a_pair() {
     assert_eq!(def.hits.len(), 2, "one hit from each sword");
     let before = w.dummy.hp;
     run(&mut w, idle(), 200);
-    let attack = WEAPONS[w.player.weapon].attack;
+    let attack = weapons()[w.player.weapon].attack;
     let expected: f32 = def.hits.iter().map(|hit| hit.mv * attack).sum();
     assert!((before - w.dummy.hp - expected).abs() < 1e-2, "both swords land");
 
@@ -1106,9 +1106,9 @@ fn the_same_class_in_each_hand_fights_as_a_pair() {
 #[test]
 fn every_weapon_class_has_its_left_hand_and_paired_attacks() {
     let mut without_pair = Vec::new();
-    for (index, info) in WEAPONS.iter().enumerate() {
+    for (index, info) in weapons().iter().enumerate() {
         let moveset = Moveset { weapon: index as u8, two_hand: false };
-        if index == SHIELD {
+        if index == shield() {
             assert!(!moveset.has(AttackKind::LeftLight1), "the shield guards instead");
             continue;
         }
@@ -1128,27 +1128,28 @@ fn every_weapon_class_has_its_left_hand_and_paired_attacks() {
 #[test]
 fn the_left_hand_cycles_through_shield_nothing_torch_and_weapons() {
     use super::player::next_left_hand;
-    let mut seen = vec![SHIELD];
-    while seen.len() < WEAPONS.len() {
+    let mut seen = vec![shield()];
+    while seen.len() < weapons().len() {
         seen.push(next_left_hand(*seen.last().unwrap()));
     }
-    assert_eq!(&seen[..4], &[SHIELD, FIST, TORCH, 0]);
-    assert_eq!(next_left_hand(*seen.last().unwrap()), SHIELD, "and round again");
+    assert_eq!(&seen[..4], &[shield(), fist(), torch(), 0]);
+    assert_eq!(next_left_hand(*seen.last().unwrap()), shield(), "and round again");
     seen.sort();
     seen.dedup();
-    assert_eq!(seen.len(), WEAPONS.len(), "every armament once");
+    assert_eq!(seen.len(), weapons().len(), "every armament once");
 
     // In play it is a swap like any other: the change lands part-way through.
     let mut w = world();
     w.step(&Input { next_left: true, ..idle() });
     assert_eq!(w.player.swap.unwrap().kind, SwapKind::NextLeft);
-    assert_eq!(w.player.left, SHIELD);
+    assert_eq!(w.player.left, shield());
     run(&mut w, idle(), 80);
-    assert_eq!(w.player.left, FIST);
-    // An empty hand punches.
+    assert_eq!(w.player.left, fist());
+    // An empty left hand next to a weapon guards with it (Skyrim's block),
+    // it doesn't punch.
     w.step(&GUARD_TAP);
-    let fist = Moveset { weapon: FIST as u8, two_hand: false };
-    assert_eq!(id(&w), Some(ActionId::Attack(fist, AttackKind::LeftLight1)));
+    assert!(!matches!(id(&w), Some(ActionId::Attack(..))));
+    assert!(w.player.guarding);
 }
 
 #[test]
@@ -1161,7 +1162,7 @@ fn a_two_handed_weapon_guards() {
     assert!(w.player.guard_up());
     let hit = Incoming { damage: 100.0, stamina: 20.0, from: Vec3::Z, low: false, level: HurtLevel::Middle };
     assert_eq!(w.player.receive_hit(&hit, &Level::flat()), HitResult::Blocked);
-    assert_eq!(w.player.hp, MAX_HP);
+    assert_eq!(w.player.hp, max_hp());
 
     // A weapon in the left hand, held one-handed, does not.
     let mut w = world();

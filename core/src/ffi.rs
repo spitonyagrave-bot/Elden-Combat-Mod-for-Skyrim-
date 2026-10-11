@@ -2,13 +2,23 @@
 //!
 //! Everything crossing this boundary is in Skyrim's space: game units
 //! (`UNITS_PER_METRE` to the metre), Z up, and heading in radians with 0
-//! facing +Y and turning clockwise toward +X. The simulation works in metres,
-//! Y up, yaw 0 facing +Z and turning toward +X, so the two yaws agree and only
-//! the axes and scale change.
+//! facing +Y and turning clockwise toward +X (+X is to the right of +Y). The
+//! simulation works in metres in Bevy's right-handed space: Y up, yaw 0 facing
+//! +Z, and +X on the character's *left*, with positive yaw turning toward +X
+//! (counter-clockwise seen from above). So Skyrim's X is the simulation's -X,
+//! and a Skyrim heading is the negated simulation yaw. Mapping X straight
+//! across would mirror the world: stick right would roll left.
+
+use std::ffi::{c_char, CStr};
+use std::path::Path;
 
 use glam::{Vec2, Vec3};
 
+use crate::pose::retarget::{ErXform, BONE_COUNT};
+use crate::pose::{self, Driver, Frame, Info};
 use crate::sim::data::{ActionId, AttackKind, Dir, HurtLevel, DT};
+use crate::sim::erdata::ReadError;
+use crate::sim::tables::{self, LoadError};
 use crate::sim::level::Level;
 use crate::sim::player::{Button, HitResult, Incoming, Input, Player, State, SWEEP_STEPS};
 
@@ -28,14 +38,23 @@ pub struct ErVec3 {
 }
 
 impl ErVec3 {
-    fn to_sim(self) -> Vec3 {
-        Vec3::new(self.x, self.z, self.y) / UNITS_PER_METRE
+    pub(crate) fn to_sim(self) -> Vec3 {
+        Vec3::new(-self.x, self.z, self.y) / UNITS_PER_METRE
     }
 
-    fn from_sim(v: Vec3) -> Self {
+    pub(crate) fn from_sim(v: Vec3) -> Self {
         let v = v * UNITS_PER_METRE;
-        Self { x: v.x, y: v.z, z: v.y }
+        Self { x: -v.x, y: v.z, z: v.y }
     }
+}
+
+/// Skyrim heading to simulation yaw, and back (the same negation).
+pub(crate) fn yaw_to_sim(heading: f32) -> f32 {
+    -heading
+}
+
+pub(crate) fn yaw_from_sim(yaw: f32) -> f32 {
+    -yaw
 }
 
 #[repr(C)]
@@ -81,7 +100,20 @@ pub struct ErWorld {
     pub target: ErVec3,
     /// A hostile actor is near: sprinting costs stamina.
     pub in_combat: u8,
+    /// Which way the player actually faces in Skyrim.
+    pub heading: f32,
+    /// Skyrim (its locomotion, or a directional-movement mod) turns the
+    /// player this frame: the simulation takes `heading` as its own facing.
+    /// Otherwise the simulation owns the facing and the bridge applies
+    /// `ErOutput::heading`. The first update always takes `heading`.
+    pub follow_heading: u8,
 }
+
+/// Seconds the simulation may think it is in the air while Skyrim reports the
+/// player standing still at one height, before it is put down on the ground.
+/// Skyrim decides whether the player really left the ground; the simulation
+/// must never wait for a fall that is not happening.
+const STUCK_IN_AIR_SECONDS: f32 = 0.25;
 
 /// What the player is doing, for the bridge to pick animations.
 #[repr(u32)]
@@ -147,12 +179,15 @@ pub struct ErOutput {
     pub speed: f32,
     pub sprinting: u8,
     pub crouching: u8,
+    /// Raising or holding the guard (it blocks once fully up).
     pub guarding: u8,
     pub invincible: u8,
     pub airborne: u8,
     /// Nothing is playing that pressing Activate would cut short, so the
     /// bridge may let Activate through to Skyrim (doors, loot, talking).
     pub interruptible: u8,
+    /// A jump attack is under way in the air (it sits in what was padding).
+    pub air_attack: u8,
     /// Stamina as a share of the maximum, 0..1.
     pub stamina: f32,
     /// A swing is live this frame and has not connected yet.
@@ -166,6 +201,9 @@ pub struct ErOutput {
     pub hit_damage: f32,
     /// Seconds both sides should freeze for if this swing lands.
     pub hit_stop: f32,
+    /// The swing's motion value (1.0 = the weapon's plain damage), for the
+    /// bridge to scale Skyrim's own weapon damage by.
+    pub hit_motion: f32,
 }
 
 /// How hard an incoming hit is.
@@ -199,17 +237,62 @@ pub struct ErCombat {
     serial: u32,
     /// The action playing after the last tick, to spot new ones.
     last_action: Option<(ActionId, f32)>,
+    /// Facing taken from Skyrim at least once.
+    synced: bool,
+    /// Skyrim's height of the player last frame, and how long the simulation
+    /// has been airborne while that height did not change.
+    last_z: Option<f32>,
+    air_still: f32,
+    /// Once that has happened, the height (Skyrim units) the player is held
+    /// at, taken as ground for as long as Skyrim keeps the player there.
+    held_at: Option<f32>,
 }
 
 impl ErCombat {
     pub fn new(position: ErVec3) -> Self {
-        Self { player: Player::new(position.to_sim()), level: Level::flat(), pending: 0.0, serial: 0, last_action: None }
+        Self {
+            player: Player::new(position.to_sim()),
+            level: Level::flat(),
+            pending: 0.0,
+            serial: 0,
+            last_action: None,
+            synced: false,
+            last_z: None,
+            air_still: 0.0,
+            held_at: None,
+        }
     }
 
     pub fn update(&mut self, dt: f32, input: &ErInput, world: &ErWorld) -> ErOutput {
         // Skyrim's collision has the last word on where the player is.
         self.player.pos = world.position.to_sim();
-        self.level.ground = Some(world.ground_z / UNITS_PER_METRE);
+        if world.follow_heading != 0 || !self.synced {
+            self.player.yaw = yaw_to_sim(world.heading);
+            self.synced = true;
+        }
+        let mut ground = world.ground_z / UNITS_PER_METRE;
+        // In the air in the simulation, but Skyrim has the player standing at
+        // the same height frame after frame: Skyrim never jumped (no animation
+        // answered, or something held the player down). Land where Skyrim
+        // has the player rather than stay airborne, and locked, for ever.
+        let standing = self.last_z.is_some_and(|z| (z - world.position.z).abs() < 1.0);
+        self.last_z = Some(world.position.z);
+        if matches!(self.player.state, State::Air(_)) && standing {
+            self.air_still += dt.max(0.0);
+        } else {
+            self.air_still = 0.0;
+        }
+        if self.air_still >= STUCK_IN_AIR_SECONDS {
+            self.held_at = Some(world.position.z);
+            self.air_still = 0.0;
+        }
+        if !standing {
+            self.held_at = None;
+        }
+        if let Some(z) = self.held_at {
+            ground = ground.max(z / UNITS_PER_METRE);
+        }
+        self.level.ground = Some(ground);
         let target = (world.has_target != 0).then(|| world.target.to_sim());
 
         self.pending = (self.pending + dt.max(0.0)).min(DT * MAX_TICKS_PER_FRAME as f32);
@@ -241,6 +324,44 @@ impl ErCombat {
             }
         }
         self.last_action = now;
+    }
+
+    /// Animation frames the simulation's clock is past its last tick.
+    pub fn ahead(&self) -> f32 {
+        (self.pending / DT).clamp(0.0, 1.0) * crate::sim::data::DF
+    }
+
+    /// How high the simulation has the player above the ground Skyrim
+    /// reported (a jump's arc), Skyrim units.
+    pub fn lift(&self) -> f32 {
+        let ground = self.level.height(self.player.pos.x, self.player.pos.z);
+        ((self.player.pos.y - ground) * UNITS_PER_METRE).max(0.0)
+    }
+
+    pub fn player(&self) -> &Player {
+        &self.player
+    }
+
+    /// What is in each hand, as indices into the weapon table (`right` never
+    /// the shield), and whether the right-hand weapon is held in both hands.
+    /// Out-of-range indices keep what is there. Returns whether anything
+    /// changed.
+    pub fn set_armaments(&mut self, right: i32, left: i32, two_handed: bool) -> bool {
+        use crate::sim::data::{shield, weapons, Grip};
+        let n = weapons().len() as i32;
+        let p = &mut self.player;
+        let right = if (0..n).contains(&right) && right as usize != shield() { right as usize } else { p.weapon };
+        let left = if (0..n).contains(&left) { left as usize } else { p.left };
+        let grip = if two_handed { Grip::TwoHandRight } else { Grip::OneHand };
+        if (right, left, grip) == (p.weapon, p.left, p.grip) {
+            return false;
+        }
+        p.weapon = right;
+        p.left = left;
+        p.grip = grip;
+        // Skyrim did the equipping; no grip-change animation of our own.
+        p.swap = None;
+        true
     }
 
     pub fn receive_hit(&mut self, from: ErVec3, low: bool, hurt: ErHurt) -> ErHitResult {
@@ -307,7 +428,7 @@ impl ErCombat {
         }
         ErOutput {
             position: ErVec3::from_sim(p.pos),
-            heading: p.yaw,
+            heading: yaw_from_sim(p.yaw),
             state,
             action: name,
             action_frame: frame,
@@ -317,17 +438,19 @@ impl ErCombat {
             speed: p.speed * UNITS_PER_METRE,
             sprinting: p.sprinting as u8,
             crouching: p.crouching as u8,
-            guarding: p.guard_up() as u8,
+            guarding: p.guarding as u8,
             invincible: p.invincible() as u8,
             airborne: p.airborne() as u8,
             interruptible: (interruptible && p.swap.is_none()) as u8,
-            stamina: (p.stamina / crate::sim::data::MAX_STAMINA).clamp(0.0, 1.0),
+            air_attack: p.air_attack.is_some() as u8,
+            stamina: (p.stamina / crate::sim::data::max_stamina()).clamp(0.0, 1.0),
             hit_live: hit.is_some() as u8,
             sweep_a,
             sweep_b,
             hit_radius: hit.map_or(0.0, |h| h.radius * UNITS_PER_METRE),
             hit_damage: hit.map_or(0.0, |h| h.attack * h.mv),
             hit_stop: hit.map_or(0.0, |h| h.stop * crate::sim::data::HIT_STOP_SCALE),
+            hit_motion: hit.map_or(0.0, |h| h.mv),
         }
     }
 }
@@ -374,7 +497,7 @@ fn button(b: ErButton) -> Button {
 fn sim_input(i: &ErInput) -> Input {
     Input {
         mv: Vec2::new(i.move_x, i.move_y),
-        cam_yaw: i.camera_heading,
+        cam_yaw: yaw_to_sim(i.camera_heading),
         dodge: button(i.dodge),
         jump: button(i.jump),
         light: button(i.light),
@@ -411,6 +534,54 @@ fn held_only(i: &Input) -> Input {
 }
 
 // --- C ABI -------------------------------------------------------------------
+
+/// `er_load_data` results.
+pub const ER_LOAD_OK: i32 = 0;
+/// `path` is null or not UTF-8.
+pub const ER_LOAD_BAD_PATH: i32 = 1;
+/// The file can't be opened or read (most often: it isn't there).
+pub const ER_LOAD_IO: i32 = 2;
+/// Not an `.erdata` file.
+pub const ER_LOAD_NOT_ERDATA: i32 = 3;
+/// Written by another version of the format.
+pub const ER_LOAD_VERSION: i32 = 4;
+/// Written by a core whose action lists differ from this one's.
+pub const ER_LOAD_LAYOUT: i32 = 5;
+/// Cut short or damaged.
+pub const ER_LOAD_CORRUPT: i32 = 6;
+/// A table was already loaded; it stays.
+pub const ER_LOAD_ALREADY_LOADED: i32 = 7;
+
+fn load_result(result: Result<(), LoadError>) -> i32 {
+    match result {
+        Ok(()) => ER_LOAD_OK,
+        Err(LoadError::Io(_)) => ER_LOAD_IO,
+        Err(LoadError::AlreadyLoaded) => ER_LOAD_ALREADY_LOADED,
+        Err(LoadError::Read(e)) => match e {
+            ReadError::BadMagic => ER_LOAD_NOT_ERDATA,
+            ReadError::Version(_) => ER_LOAD_VERSION,
+            ReadError::Layout => ER_LOAD_LAYOUT,
+            ReadError::Truncated | ReadError::Invalid(_) | ReadError::TrailingBytes => ER_LOAD_CORRUPT,
+        },
+    }
+}
+
+/// Loads the Elden Ring action table from an `.erdata` file (written by
+/// `er_dump`), in place of the one compiled in. Call it once, before
+/// `er_create`. On failure nothing changes and the compiled-in table stays.
+///
+/// # Safety
+/// `path` must be null or a NUL-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn er_load_data(path: *const c_char) -> i32 {
+    if path.is_null() {
+        return ER_LOAD_BAD_PATH;
+    }
+    let Ok(path) = CStr::from_ptr(path).to_str() else {
+        return ER_LOAD_BAD_PATH;
+    };
+    load_result(tables::load_file(Path::new(path)))
+}
 
 /// Creates the simulation for a player standing at `position`.
 #[no_mangle]
@@ -471,6 +642,219 @@ pub unsafe extern "C" fn er_confirm_hit(combat: *mut ErCombat) {
     }
 }
 
+// --- Weapons -------------------------------------------------------------------
+
+/// Index of the Elden Ring weapon class called `name` (e.g. "Longsword",
+/// "Shield", "Fist") in the action table, or -1.
+///
+/// # Safety
+/// `name` must be null or a NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn er_weapon_index(name: *const c_char) -> i32 {
+    if name.is_null() {
+        return -1;
+    }
+    let Ok(name) = CStr::from_ptr(name).to_str() else {
+        return -1;
+    };
+    crate::sim::data::weapons().iter().position(|w| w.name == name).map_or(-1, |i| i as i32)
+}
+
+/// Puts these weapon classes in the player's hands (indices from
+/// `er_weapon_index`; -1 keeps what is there). Returns 1 if anything changed.
+///
+/// # Safety
+/// `combat` must come from `er_create`.
+#[no_mangle]
+pub unsafe extern "C" fn er_set_armaments(combat: *mut ErCombat, right: i32, left: i32, two_handed: u8) -> u8 {
+    combat.as_mut().is_some_and(|c| c.set_armaments(right, left, two_handed != 0)) as u8
+}
+
+// --- Pose driver ---------------------------------------------------------------
+
+/// Skyrim node names of the bones in `ErXform` arrays, NUL-terminated.
+const BONE_NAMES: [&CStr; BONE_COUNT] = [
+    c"NPC Pelvis [Pelv]",
+    c"NPC Spine [Spn0]",
+    c"NPC Spine1 [Spn1]",
+    c"NPC Spine2 [Spn2]",
+    c"NPC Neck [Neck]",
+    c"NPC Head [Head]",
+    c"NPC L Clavicle [LClv]",
+    c"NPC L UpperArm [LUar]",
+    c"NPC L Forearm [LLar]",
+    c"NPC L Hand [LHnd]",
+    c"NPC R Clavicle [RClv]",
+    c"NPC R UpperArm [RUar]",
+    c"NPC R Forearm [RLar]",
+    c"NPC R Hand [RHnd]",
+    c"NPC L Thigh [LThg]",
+    c"NPC L Calf [LClf]",
+    c"NPC L Foot [Lft ]",
+    c"NPC L Toe0 [LToe]",
+    c"NPC R Thigh [RThg]",
+    c"NPC R Calf [RClf]",
+    c"NPC R Foot [Rft ]",
+    c"NPC R Toe0 [RToe]",
+    c"NPC L Finger10 [LF10]",
+    c"NPC L Finger20 [LF20]",
+    c"NPC R Finger10 [RF10]",
+    c"NPC R Finger20 [RF20]",
+];
+
+/// What `er_rig_update` did, for the bridge's log.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ErPoseInfo {
+    /// The Elden Ring clip playing, NUL-terminated ("" when none).
+    pub clip: [u8; 32],
+    pub frame: f32,
+    /// 0 Skyrim's pose .. 1 Elden Ring's.
+    pub weight: f32,
+    /// The clip the state calls for is not in ERCombat.eranims.
+    pub missing_clip: u8,
+}
+
+impl Default for ErPoseInfo {
+    fn default() -> Self {
+        Self { clip: [0; 32], frame: 0.0, weight: 0.0, missing_clip: 0 }
+    }
+}
+
+fn anim_load_result(result: Result<(), pose::LoadError>) -> i32 {
+    use crate::pose::clips::AnimError;
+    match result {
+        Ok(()) => ER_LOAD_OK,
+        Err(pose::LoadError::Io(_)) => ER_LOAD_IO,
+        Err(pose::LoadError::AlreadyLoaded) => ER_LOAD_ALREADY_LOADED,
+        Err(pose::LoadError::Read(AnimError::BadMagic)) => ER_LOAD_NOT_ERDATA,
+        Err(pose::LoadError::Read(AnimError::MissingJoint(_))) => ER_LOAD_LAYOUT,
+        Err(pose::LoadError::Read(_)) => ER_LOAD_CORRUPT,
+    }
+}
+
+/// Loads the baked Elden Ring animations (`ERCombat.eranims`, which is
+/// upstream's `player_anims.bin`). Once per process; returns an ErLoadResult
+/// (NOT_ERDATA: not an animation file; LAYOUT: a joint the retarget needs is
+/// missing).
+///
+/// # Safety
+/// `path` must be null or a NUL-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn er_load_anims(path: *const c_char) -> i32 {
+    if path.is_null() {
+        return ER_LOAD_BAD_PATH;
+    }
+    let Ok(path) = CStr::from_ptr(path).to_str() else {
+        return ER_LOAD_BAD_PATH;
+    };
+    anim_load_result(pose::load_file(Path::new(path)))
+}
+
+/// Clips loaded by `er_load_anims` (0 if none).
+#[no_mangle]
+pub extern "C" fn er_anims_clip_count() -> u32 {
+    pose::loaded().map_or(0, |c| c.len() as u32)
+}
+
+/// Skyrim node name of bone `bone` (< ER_BONE_COUNT), or null.
+#[no_mangle]
+pub extern "C" fn er_bone_name(bone: u32) -> *const c_char {
+    BONE_NAMES.get(bone as usize).map_or(std::ptr::null(), |n| n.as_ptr())
+}
+
+/// Whether the driver ever writes bone `bone` (the rest are landmarks it
+/// only reads).
+#[no_mangle]
+pub extern "C" fn er_bone_driven(bone: u32) -> u8 {
+    ((bone as usize) < BONE_COUNT && crate::pose::retarget::driven(bone as usize)) as u8
+}
+
+#[no_mangle]
+pub extern "C" fn er_rig_create() -> *mut Driver {
+    Box::into_raw(Box::new(Driver::new()))
+}
+
+/// # Safety
+/// `rig` must come from `er_rig_create` and not have been destroyed.
+#[no_mangle]
+pub unsafe extern "C" fn er_rig_destroy(rig: *mut Driver) {
+    if !rig.is_null() {
+        drop(Box::from_raw(rig));
+    }
+}
+
+/// Reads the player's skeleton: `reference` and `found` hold ER_BONE_COUNT
+/// entries, root-local transforms of each named bone and whether it was
+/// found. Returns how many bones will be driven (0: no animations loaded, or
+/// the skeleton is missing what the retarget needs).
+///
+/// # Safety
+/// `rig` from `er_rig_create`; both arrays ER_BONE_COUNT long.
+#[no_mangle]
+pub unsafe extern "C" fn er_rig_bind(rig: *mut Driver, reference: *const ErXform, found: *const u8) -> u32 {
+    let Some(rig) = rig.as_mut() else {
+        return 0;
+    };
+    if reference.is_null() || found.is_null() {
+        return 0;
+    }
+    let reference: &[ErXform; BONE_COUNT] = &*(reference as *const [ErXform; BONE_COUNT]);
+    let found_raw = std::slice::from_raw_parts(found, BONE_COUNT);
+    let mut found = [false; BONE_COUNT];
+    for (f, &raw) in found.iter_mut().zip(found_raw) {
+        *f = raw != 0;
+    }
+    rig.bind(reference, &found) as u32
+}
+
+/// One frame of the pose driver. `combat` is the running simulation, or null
+/// once Elden Ring mode is off (the pose then fades back to Skyrim's over
+/// ER_POSE_FADE_SECONDS). `current` is what Skyrim's animation put on the
+/// bones this frame, root-local. Fills `out` and `drive` (ER_BONE_COUNT
+/// each): set every bone whose `drive` is 1 to `out` (rotation; the pelvis's
+/// position too). Returns 1 if anything is to be written. `info` may be null.
+///
+/// # Safety
+/// `rig` from `er_rig_create`; `combat` null or from `er_create`; arrays
+/// ER_BONE_COUNT long.
+#[no_mangle]
+pub unsafe extern "C" fn er_rig_update(
+    rig: *mut Driver,
+    combat: *const ErCombat,
+    dt: f32,
+    current: *const ErXform,
+    out: *mut ErXform,
+    drive: *mut u8,
+    info: *mut ErPoseInfo,
+) -> u8 {
+    let Some(rig) = rig.as_mut() else {
+        return 0;
+    };
+    if current.is_null() || out.is_null() || drive.is_null() {
+        return 0;
+    }
+    let current: &[ErXform; BONE_COUNT] = &*(current as *const [ErXform; BONE_COUNT]);
+    let out: &mut [ErXform; BONE_COUNT] = &mut *(out as *mut [ErXform; BONE_COUNT]);
+    let frame = combat.as_ref().map(|c| Frame { player: c.player(), ahead: c.ahead(), lift: c.lift() });
+    let mut flags = [false; BONE_COUNT];
+    let mut details = Info::default();
+    let any = rig.update(frame, dt, current, out, &mut flags, &mut details);
+    let drive = std::slice::from_raw_parts_mut(drive, BONE_COUNT);
+    for (d, f) in drive.iter_mut().zip(flags) {
+        *d = f as u8;
+    }
+    if let Some(info) = info.as_mut() {
+        *info = ErPoseInfo::default();
+        let len = details.clip.len().min(31);
+        info.clip[..len].copy_from_slice(&details.clip.as_bytes()[..len]);
+        info.frame = details.frame;
+        info.weight = details.weight;
+        info.missing_clip = details.missing_clip as u8;
+    }
+    any as u8
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -496,10 +880,19 @@ mod tests {
     }
 
     #[test]
+    fn bone_names_match_the_retarget_table() {
+        for (i, (name, _)) in crate::pose::retarget::BONES.iter().enumerate() {
+            assert_eq!(BONE_NAMES[i].to_str().unwrap(), *name);
+            assert_eq!(unsafe { CStr::from_ptr(er_bone_name(i as u32)) }.to_str().unwrap(), *name);
+        }
+        assert!(er_bone_name(BONE_COUNT as u32).is_null());
+    }
+
+    #[test]
     fn axes_round_trip() {
         let v = ErVec3 { x: 140.0, y: -70.0, z: 35.0 };
         let sim = v.to_sim();
-        assert_eq!(sim, Vec3::new(2.0, 0.5, -1.0));
+        assert_eq!(sim, Vec3::new(-2.0, 0.5, -1.0));
         assert_eq!(ErVec3::from_sim(sim), v);
     }
 
@@ -564,23 +957,33 @@ mod tests {
 
     #[test]
     fn light_attack_has_a_live_swing_in_front_that_lands_once() {
-        let mut c = ErCombat::new(ErVec3::default());
-        let mut world = ErWorld::default();
-        let mut input = ErInput::default();
-        tap(&mut input.light);
-        frame(&mut c, &input, &mut world);
-        input.light = ErButton::default();
-        let mut live = None;
-        for _ in 0..40 {
-            let out = frame(&mut c, &input, &mut world);
-            if out.hit_live != 0 {
-                live = Some(out);
-                break;
+        let start = || {
+            let mut c = ErCombat::new(ErVec3::default());
+            let mut world = ErWorld::default();
+            let mut input = ErInput::default();
+            tap(&mut input.light);
+            frame(&mut c, &input, &mut world);
+            input.light = ErButton::default();
+            for _ in 0..40 {
+                let out = frame(&mut c, &input, &mut world);
+                if out.hit_live != 0 {
+                    return (c, world, input, out);
+                }
             }
+            panic!("the swing should go live");
+        };
+
+        // Heading 0 faces +Y. A real swing can open behind the shoulder, so
+        // the blade only has to come out in front somewhere in its window.
+        let (mut c, mut world, input, mut out) = start();
+        let mut ahead = false;
+        while out.hit_live != 0 {
+            ahead |= out.sweep_b.iter().any(|b| b.y > out.position.y);
+            out = frame(&mut c, &input, &mut world);
         }
-        let out = live.expect("the swing should go live");
-        // Heading 0 faces +Y: the blade is out in front.
-        assert!(out.sweep_b.iter().all(|b| b.y > out.position.y));
+        assert!(ahead, "the blade swings out in front");
+
+        let (mut c, _, _, out) = start();
         assert!(out.hit_damage > 0.0 && out.hit_radius > 0.0);
         c.confirm_hit();
         assert_eq!(c.output().hit_live, 0, "a swing lands once");
@@ -619,12 +1022,234 @@ mod tests {
     }
 
     #[test]
+    fn loading_data_reports_why_it_failed() {
+        // Only failures here: the tests share a process, and a successful
+        // load would swap the table under the others (see tests/erdata_load.rs).
+        unsafe {
+            assert_eq!(er_load_data(std::ptr::null()), ER_LOAD_BAD_PATH);
+            assert_eq!(er_load_data(c"definitely/not/here.erdata".as_ptr()), ER_LOAD_IO);
+            assert_eq!(er_load_data([0xffu8, 0].as_ptr().cast()), ER_LOAD_BAD_PATH);
+        }
+        assert_eq!(load_result(Err(LoadError::Read(ReadError::BadMagic))), ER_LOAD_NOT_ERDATA);
+        assert_eq!(load_result(Err(LoadError::Read(ReadError::Version(2)))), ER_LOAD_VERSION);
+        assert_eq!(load_result(Err(LoadError::Read(ReadError::Layout))), ER_LOAD_LAYOUT);
+        assert_eq!(load_result(Err(LoadError::Read(ReadError::Truncated))), ER_LOAD_CORRUPT);
+        assert!(tables::loaded().is_none());
+    }
+
+    #[test]
     fn ground_height_comes_from_skyrim() {
         let mut c = ErCombat::new(ErVec3 { x: 0.0, y: 0.0, z: 700.0 });
         let mut world = ErWorld { position: ErVec3 { x: 0.0, y: 0.0, z: 700.0 }, ground_z: 700.0, ..Default::default() };
         let out = frame(&mut c, &ErInput::default(), &mut world);
         assert_eq!(out.state, ErState::Ground, "standing on ground 10 m up is not falling");
         assert!((out.position.z - 700.0).abs() < 0.5);
+    }
+
+    /// Joel's log: a jump that no Skyrim animation answered left the core in
+    /// state 1 (action) with stamina frozen, and every later dodge did
+    /// nothing. Skyrim never moves the player here, as when no animation
+    /// answers: the core must come back down on its own.
+    #[test]
+    fn a_jump_skyrim_never_follows_still_ends() {
+        let mut c = ErCombat::new(ErVec3::default());
+        let world = ErWorld::default();
+        let mut input = ErInput::default();
+        tap(&mut input.jump);
+        let out = c.update(FRAME, &input, &world);
+        assert_eq!(out.action_kind, ErAction::Jump);
+        input.jump = ErButton::default();
+        let mut out = out;
+        let mut frames = 0;
+        // Skyrim's position stays put: never fed back.
+        while out.state != ErState::Ground && frames < 600 {
+            out = c.update(FRAME, &input, &world);
+            frames += 1;
+        }
+        assert_eq!(out.state, ErState::Ground, "still {:?} after {frames} frames", out.state);
+        assert!(frames < 240, "took {frames} frames to come down");
+
+        // Stamina comes back and the next dodge rolls.
+        let low = out.stamina;
+        for _ in 0..60 {
+            out = c.update(FRAME, &input, &world);
+        }
+        assert!(out.stamina > low || out.stamina == 1.0, "stamina frozen at {}", out.stamina);
+        let before = out.action_serial;
+        input.move_y = 1.0;
+        tap(&mut input.dodge);
+        c.update(FRAME, &input, &world);
+        input.dodge = ErButton::default();
+        release(&mut input.dodge);
+        let out = c.update(FRAME, &input, &world);
+        assert_ne!(out.action_serial, before, "the dodge after the jump must roll");
+        assert_eq!(out.action_kind, ErAction::Roll);
+    }
+
+    /// In the air in the simulation while Skyrim holds the player at one
+    /// height (walked off something Skyrim says is not a ledge, a ground
+    /// height that is off): it lands instead of falling for ever.
+    #[test]
+    fn airborne_while_skyrim_stands_still_lands() {
+        let mut c = ErCombat::new(ErVec3 { z: 700.0, ..Default::default() });
+        // Skyrim says the ground is 5 m below, but the player stays at 700.
+        let world = ErWorld { position: ErVec3 { z: 700.0, ..Default::default() }, ground_z: 350.0, ..Default::default() };
+        let input = ErInput::default();
+        let mut out = c.update(FRAME, &input, &world);
+        assert_eq!(out.state, ErState::Air);
+        for _ in 0..60 {
+            out = c.update(FRAME, &input, &world);
+        }
+        assert_ne!(out.state, ErState::Air, "Skyrim never fell; the core must not wait for it");
+    }
+
+    #[test]
+    fn stick_right_goes_right_in_skyrim() {
+        // Camera looks down +Y (heading 0); its right is +X.
+        let mut c = ErCombat::new(ErVec3::default());
+        let mut world = ErWorld::default();
+        let input = ErInput { move_x: 1.0, ..Default::default() };
+        let mut out = c.output();
+        for _ in 0..60 {
+            out = frame(&mut c, &input, &mut world);
+        }
+        assert!(out.position.x > 100.0, "should run along +X, got {:?}", out.position);
+        assert!((out.heading - std::f32::consts::FRAC_PI_2).abs() < 0.05, "faces +X: heading {}", out.heading);
+    }
+
+    #[test]
+    fn locked_on_roll_to_the_right_says_right() {
+        let mut c = ErCombat::new(ErVec3::default());
+        let mut world = ErWorld { has_target: 1, target: ErVec3 { y: 500.0, ..Default::default() }, ..Default::default() };
+        let mut input = ErInput { move_x: 1.0, ..Default::default() };
+        frame(&mut c, &input, &mut world);
+        tap(&mut input.dodge);
+        frame(&mut c, &input, &mut world);
+        input.dodge = ErButton::default();
+        release(&mut input.dodge);
+        let out = frame(&mut c, &input, &mut world);
+        assert_eq!(out.action_kind, ErAction::Roll);
+        assert_eq!(out.action_dir, Dir::Right as u32);
+        let start = out.position;
+        let mut out = out;
+        for _ in 0..40 {
+            out = frame(&mut c, &input, &mut world);
+        }
+        // The stand-in's rolls all move straight ahead; the real ones sideways.
+        assert!(cfg!(not(er_data)) || out.position.x > start.x + 50.0, "rolled toward +X: {:?} -> {:?}", start, out.position);
+    }
+
+    /// Jump, then Light in the air: the swing goes live on the way down and
+    /// the landing plays the jump attack's follow-through. Skyrim does not
+    /// jump along (as with the pose driver), and it still works.
+    #[test]
+    fn a_jump_attack_comes_from_jump_then_light() {
+        let mut c = ErCombat::new(ErVec3::default());
+        let world = ErWorld::default();
+        let mut input = ErInput { move_y: 1.0, ..Default::default() };
+        c.update(FRAME, &input, &world);
+        tap(&mut input.jump);
+        c.update(FRAME, &input, &world);
+        input.jump = ErButton::default();
+        let (mut live, mut landed) = (false, false);
+        for i in 0..240 {
+            if i == 12 {
+                tap(&mut input.light);
+            }
+            let out = c.update(FRAME, &input, &world);
+            input.light = ErButton::default();
+            live |= out.hit_live != 0;
+            if out.action_kind == ErAction::JumpAttackLand {
+                landed = true;
+                break;
+            }
+        }
+        assert!(live, "the jump attack's swing goes live in the air");
+        assert!(landed, "and lands into its follow-through");
+    }
+
+    /// Locked on, the core turns the player to face the target, and the
+    /// output heading says so (the bridge applies it while locked).
+    #[test]
+    fn locked_on_the_core_faces_the_target() {
+        let mut c = ErCombat::new(ErVec3::default());
+        // Target off to Skyrim's +X: heading 90 degrees.
+        let world = ErWorld { has_target: 1, target: ErVec3 { x: 500.0, ..Default::default() }, ..Default::default() };
+        let mut out = c.output();
+        for _ in 0..60 {
+            out = c.update(FRAME, &ErInput { move_y: 0.5, ..Default::default() }, &world);
+        }
+        assert!((out.heading - std::f32::consts::FRAC_PI_2).abs() < 0.05, "heading {}", out.heading);
+    }
+
+    #[test]
+    fn the_plugins_weapon_classes_are_in_the_table() {
+        // Every name plugin/src/Weapons.cpp maps to. The stub table has only
+        // the last three; with the real table all must resolve.
+        let names = [
+            "Uchigatana", "Rapier", "Whip", "Twinblade", "Halberd", "Great Spear", "Short Spear", "Claw", "Reaper",
+            "Curved Sword", "Great Hammer", "Dagger", "Longsword", "Battle Axe", "Club", "Claymore", "Greataxe",
+            "Fist", "Torch", "Shield",
+        ];
+        for name in names {
+            let c = std::ffi::CString::new(name).unwrap();
+            let i = unsafe { er_weapon_index(c.as_ptr()) };
+            if cfg!(er_data) || ["Fist", "Torch", "Shield"].contains(&name) {
+                assert!(i >= 0, "{name} not in the action table");
+            }
+        }
+    }
+
+    #[test]
+    fn an_empty_left_hand_guards_with_the_right_weapon() {
+        use crate::sim::data::{fist, shield};
+        use crate::sim::player::LeftButton;
+        let mut c = ErCombat::new(ErVec3::default());
+        let sword = if shield() == 0 { 1 } else { 0 };
+        assert_ne!(sword, fist());
+        c.set_armaments(sword as i32, fist() as i32, false);
+        assert_eq!(c.player.left_button(), LeftButton::Guard);
+        let world = ErWorld { ground_z: 0.0, ..Default::default() };
+        let press = ErInput { guard: ErButton { pressed: 1, held: 1, released: 0 }, ..Default::default() };
+        let hold = ErInput { guard: ErButton { pressed: 0, held: 1, released: 0 }, ..Default::default() };
+        let mut out = c.update(FRAME, &press, &world);
+        for _ in 0..20 {
+            out = c.update(FRAME, &hold, &world);
+        }
+        assert_eq!(out.guarding, 1, "the guard is up");
+        assert_ne!(out.action_kind, ErAction::LeftAttack, "no punch");
+        // Fists in both hands: the left button punches.
+        c.set_armaments(fist() as i32, fist() as i32, false);
+        assert_eq!(c.player.left_button(), LeftButton::Attack);
+    }
+
+    #[test]
+    fn armaments_change_the_moveset() {
+        use crate::sim::data::{shield, weapons, Grip};
+        let names: Vec<&str> = weapons().iter().map(|w| w.name).collect();
+        let c_name = |n: &str| std::ffi::CString::new(n).unwrap();
+        for (i, n) in names.iter().enumerate() {
+            assert_eq!(unsafe { er_weapon_index(c_name(n).as_ptr()) }, i as i32);
+        }
+        assert_eq!(unsafe { er_weapon_index(c"No such weapon".as_ptr()) }, -1);
+        let mut c = ErCombat::new(ErVec3::default());
+        let last = names.len() as i32 - 1;
+        // The shield is never a right-hand weapon.
+        assert!(!c.set_armaments(shield() as i32, -1, false));
+        let right = if shield() == 0 { 1 } else { 0 };
+        let changed = c.set_armaments(right as i32, last, true);
+        assert_eq!(changed, (right, last as usize, Grip::TwoHandRight) != (c.player.weapon, c.player.left, c.player.grip) || changed);
+        assert_eq!(c.player.weapon, right);
+        assert_eq!(c.player.grip, Grip::TwoHandRight);
+        assert!(!c.set_armaments(right as i32, last, true), "no change, nothing to do");
+    }
+
+    #[test]
+    fn follows_skyrims_heading_when_asked() {
+        let mut c = ErCombat::new(ErVec3::default());
+        let world = ErWorld { heading: 1.0, follow_heading: 1, ..Default::default() };
+        let out = c.update(FRAME, &ErInput::default(), &world);
+        assert!((out.heading - 1.0).abs() < 1e-4);
     }
 }
 
@@ -640,12 +1265,31 @@ mod layout {
         assert_eq!(size_of::<ErVec3>(), 12);
         assert_eq!(size_of::<ErButton>(), 3);
         assert_eq!(size_of::<ErInput>(), 32);
-        assert_eq!(size_of::<ErWorld>(), 36);
+        assert_eq!(size_of::<ErXform>(), 48);
+        assert_eq!(size_of::<ErPoseInfo>(), 44);
+        assert_eq!(BONE_COUNT, 26);
+        assert_eq!(size_of::<ErWorld>(), 44);
         assert_eq!(offset_of!(ErWorld, target), 20);
-        assert_eq!(size_of::<ErOutput>(), 220);
+        assert_eq!(offset_of!(ErWorld, heading), 36);
+        assert_eq!(offset_of!(ErWorld, follow_heading), 40);
+        assert_eq!(size_of::<ErOutput>(), 224);
+        assert_eq!(offset_of!(ErOutput, hit_motion), 220);
         assert_eq!(offset_of!(ErOutput, action), 20);
         assert_eq!(offset_of!(ErOutput, stamina), 80);
+        assert_eq!(offset_of!(ErOutput, air_attack), 78);
         assert_eq!(offset_of!(ErOutput, sweep_a), 88);
         assert_eq!(offset_of!(ErOutput, hit_stop), 216);
+    }
+}
+
+/// The header's pose-driver constants match the core's.
+#[cfg(test)]
+mod header {
+    #[test]
+    fn constants_match() {
+        let header = include_str!("../include/er_combat.h");
+        assert!(header.contains(&format!("#define ER_BONE_COUNT {}", crate::pose::retarget::BONE_COUNT)));
+        assert!(header.contains(&format!("#define ER_POSE_FADE_SECONDS {}f", crate::pose::FADE_SECONDS)));
+        assert!(header.contains(&format!("#define ER_SWEEP_STEPS {}", crate::sim::player::SWEEP_STEPS)));
     }
 }

@@ -18,6 +18,13 @@ public:
     // whether it may go through).
     bool activatePressed = false;
 
+    // Lock-on was pressed since the last call (middle mouse / R3 by default).
+    bool lockPressed = false;
+
+    // Elden Ring mode, flipped by the toggle key. Off at startup.
+    bool enabled = false;
+    bool toggled = false;  // flipped since the bridge last looked
+
 protected:
     RE::BSEventNotifyControl ProcessEvent(RE::InputEvent* const* a_event, RE::BSTEventSource<RE::InputEvent*>*) override;
 
@@ -49,6 +56,7 @@ private:
 
     Key dodge, jump, light, heavy, guard;
     bool heavyModifierHeld = false;
+    bool crouchPressed = false;
     bool walk = false;
     bool forward = false, back = false, left = false, right = false;
     float stickX = 0.0f, stickY = 0.0f;
