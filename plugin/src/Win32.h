@@ -15,6 +15,10 @@ namespace Win32
     // Returns 0 on success, otherwise the Windows error code.
     std::uint32_t LoadCore();
 
+    // The folder ERCombat.dll sits in (Data/SKSE/Plugins), where the core
+    // and ERCombat.erdata live too.
+    std::optional<std::filesystem::path> PluginDirectory();
+
     // Documents/My Games/Skyrim Special Edition/SKSE, where SKSE and most
     // plugins log. CommonLibSSE-NG 3.7.0's own log_directory() reads the
     // folder name from an address that is wrong on 1.6.1170 and ends up in

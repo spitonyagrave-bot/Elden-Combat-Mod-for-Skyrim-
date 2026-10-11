@@ -6,9 +6,14 @@
 //! Y up, yaw 0 facing +Z and turning toward +X, so the two yaws agree and only
 //! the axes and scale change.
 
+use std::ffi::{c_char, CStr};
+use std::path::Path;
+
 use glam::{Vec2, Vec3};
 
 use crate::sim::data::{ActionId, AttackKind, Dir, HurtLevel, DT};
+use crate::sim::erdata::ReadError;
+use crate::sim::tables::{self, LoadError};
 use crate::sim::level::Level;
 use crate::sim::player::{Button, HitResult, Incoming, Input, Player, State, SWEEP_STEPS};
 
@@ -321,7 +326,7 @@ impl ErCombat {
             invincible: p.invincible() as u8,
             airborne: p.airborne() as u8,
             interruptible: (interruptible && p.swap.is_none()) as u8,
-            stamina: (p.stamina / crate::sim::data::MAX_STAMINA).clamp(0.0, 1.0),
+            stamina: (p.stamina / crate::sim::data::max_stamina()).clamp(0.0, 1.0),
             hit_live: hit.is_some() as u8,
             sweep_a,
             sweep_b,
@@ -411,6 +416,54 @@ fn held_only(i: &Input) -> Input {
 }
 
 // --- C ABI -------------------------------------------------------------------
+
+/// `er_load_data` results.
+pub const ER_LOAD_OK: i32 = 0;
+/// `path` is null or not UTF-8.
+pub const ER_LOAD_BAD_PATH: i32 = 1;
+/// The file can't be opened or read (most often: it isn't there).
+pub const ER_LOAD_IO: i32 = 2;
+/// Not an `.erdata` file.
+pub const ER_LOAD_NOT_ERDATA: i32 = 3;
+/// Written by another version of the format.
+pub const ER_LOAD_VERSION: i32 = 4;
+/// Written by a core whose action lists differ from this one's.
+pub const ER_LOAD_LAYOUT: i32 = 5;
+/// Cut short or damaged.
+pub const ER_LOAD_CORRUPT: i32 = 6;
+/// A table was already loaded; it stays.
+pub const ER_LOAD_ALREADY_LOADED: i32 = 7;
+
+fn load_result(result: Result<(), LoadError>) -> i32 {
+    match result {
+        Ok(()) => ER_LOAD_OK,
+        Err(LoadError::Io(_)) => ER_LOAD_IO,
+        Err(LoadError::AlreadyLoaded) => ER_LOAD_ALREADY_LOADED,
+        Err(LoadError::Read(e)) => match e {
+            ReadError::BadMagic => ER_LOAD_NOT_ERDATA,
+            ReadError::Version(_) => ER_LOAD_VERSION,
+            ReadError::Layout => ER_LOAD_LAYOUT,
+            ReadError::Truncated | ReadError::Invalid(_) | ReadError::TrailingBytes => ER_LOAD_CORRUPT,
+        },
+    }
+}
+
+/// Loads the Elden Ring action table from an `.erdata` file (written by
+/// `er_dump`), in place of the one compiled in. Call it once, before
+/// `er_create`. On failure nothing changes and the compiled-in table stays.
+///
+/// # Safety
+/// `path` must be null or a NUL-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn er_load_data(path: *const c_char) -> i32 {
+    if path.is_null() {
+        return ER_LOAD_BAD_PATH;
+    }
+    let Ok(path) = CStr::from_ptr(path).to_str() else {
+        return ER_LOAD_BAD_PATH;
+    };
+    load_result(tables::load_file(Path::new(path)))
+}
 
 /// Creates the simulation for a player standing at `position`.
 #[no_mangle]
@@ -616,6 +669,22 @@ mod tests {
         let out = c.update(5.0, &input, &world);
         let metres = out.position.y / UNITS_PER_METRE;
         assert!(metres < 1.0, "moved {metres} m in one capped frame");
+    }
+
+    #[test]
+    fn loading_data_reports_why_it_failed() {
+        // Only failures here: the tests share a process, and a successful
+        // load would swap the table under the others (see tests/erdata_load.rs).
+        unsafe {
+            assert_eq!(er_load_data(std::ptr::null()), ER_LOAD_BAD_PATH);
+            assert_eq!(er_load_data(c"definitely/not/here.erdata".as_ptr()), ER_LOAD_IO);
+            assert_eq!(er_load_data([0xffu8, 0].as_ptr().cast()), ER_LOAD_BAD_PATH);
+        }
+        assert_eq!(load_result(Err(LoadError::Read(ReadError::BadMagic))), ER_LOAD_NOT_ERDATA);
+        assert_eq!(load_result(Err(LoadError::Read(ReadError::Version(2)))), ER_LOAD_VERSION);
+        assert_eq!(load_result(Err(LoadError::Read(ReadError::Layout))), ER_LOAD_LAYOUT);
+        assert_eq!(load_result(Err(LoadError::Read(ReadError::Truncated))), ER_LOAD_CORRUPT);
+        assert!(tables::loaded().is_none());
     }
 
     #[test]

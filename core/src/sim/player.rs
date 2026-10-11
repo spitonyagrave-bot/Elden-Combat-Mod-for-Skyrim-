@@ -190,10 +190,10 @@ pub struct Player {
     pub crouching: bool,
     pub guarding: bool,
     pub load: Load,
-    /// Index into `WEAPONS` of the right-hand weapon.
+    /// Index into `weapons()` of the right-hand weapon.
     pub weapon: usize,
     /// And of what the left hand holds: the shield, a torch, another weapon,
-    /// or nothing (`FIST`).
+    /// or nothing (`fist()`).
     pub left: usize,
     pub grip: Grip,
     pub in_combat: bool,
@@ -220,8 +220,8 @@ impl Player {
         Self {
             pos: spawn,
             yaw: 0.0,
-            hp: MAX_HP,
-            stamina: MAX_STAMINA,
+            hp: max_hp(),
+            stamina: max_stamina(),
             state: State::Ground,
             speed: 0.0,
             move_dir: Vec3::Z,
@@ -229,8 +229,8 @@ impl Player {
             crouching: false,
             guarding: false,
             load: Load::Medium,
-            weapon: DEFAULT_WEAPON,
-            left: SHIELD,
+            weapon: default_weapon(),
+            left: shield(),
             grip: Grip::OneHand,
             in_combat: false,
             buffer: None,
@@ -265,7 +265,7 @@ impl Player {
     /// A shield guards, and so does any weapon held in both hands. Anything
     /// else in the left hand attacks.
     pub fn left_button(&self) -> LeftButton {
-        if self.grip == Grip::OneHand && self.left != SHIELD {
+        if self.grip == Grip::OneHand && self.left != shield() {
             LeftButton::Attack
         } else {
             LeftButton::Guard
@@ -450,7 +450,7 @@ impl Player {
 
         if regen {
             let mult = if self.guarding { GUARD_REGEN_MULT } else { 1.0 };
-            self.stamina = (self.stamina + STAMINA_REGEN * mult * DT).min(MAX_STAMINA);
+            self.stamina = (self.stamina + STAMINA_REGEN * mult * DT).min(max_stamina());
         }
     }
 
@@ -561,7 +561,7 @@ impl Player {
                 })
             } else if inp.next_weapon {
                 // The shield is the last entry and is never a right-hand weapon.
-                Some((SwapKind::NextWeapon, self.grip, (self.weapon + 1) % SHIELD, self.left))
+                Some((SwapKind::NextWeapon, self.grip, (self.weapon + 1) % shield(), self.left))
             } else if inp.next_left && self.grip == Grip::OneHand {
                 Some((SwapKind::NextLeft, self.grip, self.weapon, next_left_hand(self.left)))
             } else {
@@ -590,7 +590,7 @@ impl Player {
                 }
             }
         }
-        if was_sprinting && wish.is_none() && self.speed > RUN_SPEED + 0.5 {
+        if was_sprinting && wish.is_none() && self.speed > run_speed() + 0.5 {
             self.start(ActionId::SprintStop);
             return true;
         }
@@ -606,22 +606,22 @@ impl Player {
         let strafing = target.is_some() && !self.sprinting;
         let target_speed = match wish {
             None => 0.0,
-            Some(_) if self.sprinting => SPRINT_SPEED,
-            Some(_) if self.crouching && (inp.walk || inp.tilt() < WALK_TILT) => CROUCH_WALK_SPEED,
-            Some(_) if self.crouching => CROUCH_RUN_SPEED,
-            Some(_) if inp.walk || inp.tilt() < WALK_TILT => WALK_SPEED,
+            Some(_) if self.sprinting => sprint_speed(),
+            Some(_) if self.crouching && (inp.walk || inp.tilt() < WALK_TILT) => crouch_walk_speed(),
+            Some(_) if self.crouching => crouch_run_speed(),
+            Some(_) if inp.walk || inp.tilt() < WALK_TILT => walk_speed(),
             // Backpedalling and sidestepping around a target are separate, slower loops.
             Some(w) if strafing => {
                 let along = w.dot(self.facing());
                 if along > FRAC_PI_4.cos() {
-                    RUN_SPEED
+                    run_speed()
                 } else if along < -FRAC_PI_4.cos() {
-                    RUN_BACK_SPEED
+                    run_back_speed()
                 } else {
-                    RUN_SIDE_SPEED
+                    run_side_speed()
                 }
             }
-            Some(_) => RUN_SPEED,
+            Some(_) => run_speed(),
         };
         let rate = if target_speed > self.speed { ACCEL } else { DECEL };
         self.speed = approach(self.speed, target_speed, rate * DT);
@@ -704,7 +704,7 @@ impl Player {
             self.jump(a, &def, step, inp, level, target.is_some());
             return false;
         }
-        if !self.follow_ground(level, (step / DT).clamp_length_max(SPRINT_SPEED)) {
+        if !self.follow_ground(level, (step / DT).clamp_length_max(sprint_speed())) {
             return false;
         }
 
@@ -749,7 +749,7 @@ impl Player {
             self.state = State::Ground;
             self.move_dir = w;
             self.speed = match a.id {
-                ActionId::LandSprint if !self.sprint_held(inp) => RUN_SPEED,
+                ActionId::LandSprint if !self.sprint_held(inp) => run_speed(),
                 id => id.exit_speed(),
             };
         } else if a.f >= def.total {
@@ -845,7 +845,7 @@ impl Player {
         }
         if fall >= FALL_DAMAGE_START {
             let t = (fall - FALL_DAMAGE_START) / (FALL_DEATH - FALL_DAMAGE_START);
-            self.hp -= MAX_HP * (0.3 + 0.6 * t);
+            self.hp -= max_hp() * (0.3 + 0.6 * t);
             if self.hp <= 0.0 {
                 self.die();
                 return;
@@ -1094,7 +1094,7 @@ impl Player {
 /// What the left hand takes up next: the shield, then nothing, then a torch,
 /// then each weapon in turn.
 pub fn next_left_hand(left: usize) -> usize {
-    let order: Vec<usize> = [SHIELD, FIST, TORCH].into_iter().chain((0..SHIELD).filter(|&i| i != FIST && i != TORCH)).collect();
+    let order: Vec<usize> = [shield(), fist(), torch()].into_iter().chain((0..shield()).filter(|&i| i != fist() && i != torch())).collect();
     let at = order.iter().position(|&i| i == left).unwrap_or(0);
     order[(at + 1) % order.len()]
 }

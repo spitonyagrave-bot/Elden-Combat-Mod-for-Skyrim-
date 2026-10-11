@@ -107,8 +107,25 @@ typedef enum ErHitResult : uint32_t {
     ER_HIT_HIT = 5,
 } ErHitResult;
 
+/* er_load_data results. */
+typedef enum ErLoadResult : int32_t {
+    ER_LOAD_OK = 0,
+    ER_LOAD_BAD_PATH = 1,       /* null or not UTF-8 */
+    ER_LOAD_IO = 2,             /* can't open or read the file (missing?) */
+    ER_LOAD_NOT_ERDATA = 3,     /* not an .erdata file */
+    ER_LOAD_VERSION = 4,        /* another version of the format */
+    ER_LOAD_LAYOUT = 5,         /* written by a core with different action lists */
+    ER_LOAD_CORRUPT = 6,        /* cut short or damaged */
+    ER_LOAD_ALREADY_LOADED = 7, /* a table is already loaded; it stays */
+} ErLoadResult;
+
 typedef struct ErCombat ErCombat;
 
+/* Loads the Elden Ring action table from an .erdata file (UTF-8 path),
+ * replacing the one compiled in. Call once, before er_create. On failure
+ * nothing changes and the compiled-in (stand-in) table stays. Returns an
+ * ErLoadResult. */
+int32_t er_load_data(const char* path);
 ErCombat* er_create(ErVec3 position);
 void er_destroy(ErCombat* combat);
 void er_update(ErCombat* combat, float dt, const ErInput* input, const ErWorld* world, ErOutput* out);

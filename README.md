@@ -58,6 +58,20 @@ compiles and the tests run. To use the real data:
 2. Copy its generated `src/sim/extracted.rs` to `core/src/sim/extracted.rs`
    and rebuild. `build.rs` notices it and switches over automatically.
 
+The DLL from CI (or any build without `extracted.rs`) loads the real table at
+run time instead, from `ERCombat.erdata` next to `ERCombat.dll`. To make that
+file, with `core/src/sim/extracted.rs` in place:
+
+```
+cd core
+cargo run --release --bin er_dump -- ERCombat.erdata
+```
+
+and copy `ERCombat.erdata` into `Data/SKSE/Plugins` (or the mod's
+`SKSE/Plugins`). `ERCombat.log` says whether it loaded; without it the core
+runs on the stand-in. To run the stand-in's tests while `extracted.rs` is
+present, set `ER_COMBAT_STUB=1`.
+
 Please keep generated data out of forks and uploads, as upstream asks.
 
 ## Status

@@ -2,6 +2,8 @@
 core/target/
 # Generated from your own copy of Elden Ring. Never commit it.
 core/src/sim/extracted.rs
+# The same data, dumped for the DLL to load at run time.
+*.erdata
 # C++ build
 plugin/build/
 plugin/dist/SKSE/Plugins/*.dll

@@ -8,14 +8,16 @@
 
 #include "Win32.h"
 
-namespace Win32
+namespace
 {
-    std::uint32_t LoadCore()
+    // The folder this DLL (ERCombat.dll) is in, with a trailing separator.
+    // Returns 0 on success, otherwise the Windows error code.
+    DWORD OwnDirectory(std::wstring& dir)
     {
         HMODULE self = nullptr;
         if (!GetModuleHandleExW(
                 GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                reinterpret_cast<LPCWSTR>(&LoadCore), &self)) {
+                reinterpret_cast<LPCWSTR>(&OwnDirectory), &self)) {
             return GetLastError();
         }
 
@@ -33,11 +35,33 @@ namespace Win32
         }
 
         path.erase(path.find_last_of(L"\\/") + 1);
+        dir = std::move(path);
+        return 0;
+    }
+}
+
+namespace Win32
+{
+    std::uint32_t LoadCore()
+    {
+        std::wstring path;
+        if (auto error = OwnDirectory(path); error != 0) {
+            return error;
+        }
         path += L"er_combat_core.dll";
         if (!LoadLibraryExW(path.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH)) {
             return GetLastError();
         }
         return 0;
+    }
+
+    std::optional<std::filesystem::path> PluginDirectory()
+    {
+        std::wstring dir;
+        if (OwnDirectory(dir) != 0) {
+            return std::nullopt;
+        }
+        return std::filesystem::path(dir);
     }
 
     std::optional<std::filesystem::path> LogDirectory()
