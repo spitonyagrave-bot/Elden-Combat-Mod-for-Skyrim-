@@ -13,6 +13,7 @@ static_assert(offsetof(ErWorld, follow_heading) == 40);
 static_assert(sizeof(ErOutput) == 224);
 static_assert(offsetof(ErOutput, hit_motion) == 220);
 static_assert(offsetof(ErOutput, sweep_a) == 88);
+static_assert(offsetof(ErOutput, air_attack) == 78);
 
 namespace
 {
@@ -43,6 +44,25 @@ namespace
         }
         const ErVec3 p = Add(a, u, s), q = Add(c, v, t), r = Sub(p, q);
         return std::sqrt(Dot(r, r));
+    }
+
+    // Moves whose visuals ERCombat.ini gives to Skyrim's own animations
+    // ([Pose] Rolls=TKDodge, Jumps=Skyrim). The core still runs them.
+    bool SkyrimShows(const ErOutput& out)
+    {
+        const auto& settings = Settings::Get();
+        const auto kind = out.action_kind;
+        const bool acting = out.state == ER_STATE_ACTION;
+        if (settings.rollsSkyrim && acting &&
+            (kind == ER_ACTION_ROLL || kind == ER_ACTION_CROUCH_ROLL || kind == ER_ACTION_BACKSTEP)) {
+            return true;
+        }
+        // A jump attack shows the Elden Ring swing on the airborne body.
+        if (settings.jumpsSkyrim && !out.air_attack && (out.state == ER_STATE_AIR ||
+                                        (acting && (kind == ER_ACTION_JUMP || kind == ER_ACTION_LAND)))) {
+            return true;
+        }
+        return false;
     }
 
     bool MenuUp()
@@ -132,8 +152,18 @@ void Bridge::Tick(RE::PlayerCharacter* player, float delta)
 
     ErOutput out{};
     er_update(combat, delta, &controls, &world, &out);
-    PoseDriver::SetSource(combat);
+    PoseDriver::SetSource(SkyrimShows(out) ? nullptr : combat);
     lock.unlock();
+    // Skyrim's own jump (Jumps=Skyrim) only from the ground, not mid-action.
+    if (Settings::Get().jumpsSkyrim) {
+        const bool jumpOk = out.state == ER_STATE_GROUND;
+        if (jumpOk != skyrimJump) {
+            skyrimJump = jumpOk;
+            if (auto* controls = RE::PlayerControls::GetSingleton()) {
+                controls->jumpHandler->SetInputEventHandlingEnabled(jumpOk);
+            }
+        }
+    }
     const bool posing = PoseDriver::Active();
     const bool acting = out.state != ER_STATE_GROUND && out.state != ER_STATE_DEAD;
     const bool ownYaw = acting || (target && out.state != ER_STATE_DEAD);
@@ -214,7 +244,9 @@ void Bridge::SetCombatMode(bool on)
         // The core owns these while a weapon is drawn. Movement, Activate,
         // shouts, sneaking and the camera stay with Skyrim.
         controls->sprintHandler->SetInputEventHandlingEnabled(!on);
-        controls->jumpHandler->SetInputEventHandlingEnabled(!on);
+        // Jumps=Skyrim: Skyrim's jump handler jumps (from the ground; see Tick).
+        controls->jumpHandler->SetInputEventHandlingEnabled(!on || Settings::Get().jumpsSkyrim);
+        skyrimJump = !on || Settings::Get().jumpsSkyrim;
         controls->attackBlockHandler->SetInputEventHandlingEnabled(!on);
         // R3 is lock-on in Elden Ring mode, not the first-person toggle (and
         // first person would end Elden Ring combat anyway).
@@ -260,6 +292,11 @@ void Bridge::PlayAction(RE::PlayerCharacter* player, const ErOutput& out)
         // Skyrim attack or dodge would hand MCO, Precision, TK Dodge and the
         // rest something to act on.
         logger::info("Action {} ({}): Elden Ring pose plays it, no Skyrim event", static_cast<std::uint32_t>(kind), static_cast<const char*>(out.action));
+        return;
+    }
+    if (kind == ER_ACTION_JUMP && Settings::Get().jumpsSkyrim) {
+        // Skyrim's jump handler already jumped on the same key press.
+        logger::info("Action {} ({}): Skyrim's own jump plays it", static_cast<std::uint32_t>(kind), static_cast<const char*>(out.action));
         return;
     }
     const auto& base = Settings::Get().events[kind];

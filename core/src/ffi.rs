@@ -186,6 +186,8 @@ pub struct ErOutput {
     /// Nothing is playing that pressing Activate would cut short, so the
     /// bridge may let Activate through to Skyrim (doors, loot, talking).
     pub interruptible: u8,
+    /// A jump attack is under way in the air (it sits in what was padding).
+    pub air_attack: u8,
     /// Stamina as a share of the maximum, 0..1.
     pub stamina: f32,
     /// A swing is live this frame and has not connected yet.
@@ -440,6 +442,7 @@ impl ErCombat {
             invincible: p.invincible() as u8,
             airborne: p.airborne() as u8,
             interruptible: (interruptible && p.swap.is_none()) as u8,
+            air_attack: p.air_attack.is_some() as u8,
             stamina: (p.stamina / crate::sim::data::max_stamina()).clamp(0.0, 1.0),
             hit_live: hit.is_some() as u8,
             sweep_a,
@@ -1273,6 +1276,7 @@ mod layout {
         assert_eq!(offset_of!(ErOutput, hit_motion), 220);
         assert_eq!(offset_of!(ErOutput, action), 20);
         assert_eq!(offset_of!(ErOutput, stamina), 80);
+        assert_eq!(offset_of!(ErOutput, air_attack), 78);
         assert_eq!(offset_of!(ErOutput, sweep_a), 88);
         assert_eq!(offset_of!(ErOutput, hit_stop), 216);
     }

@@ -42,6 +42,12 @@ struct Settings
     // 0: after the player's update.
     bool poseDriver = true;
     std::int32_t poseHook = 1;
+    // Per category, whose animation shows while the core runs the move:
+    // Rolls=TKDodge (TK Dodge's directional rolls; the core still owns
+    // timing, i-frames and stamina) or ER; Jumps=Skyrim (Skyrim's own jump,
+    // which really leaves the ground) or ER.
+    bool rollsSkyrim = true;
+    bool jumpsSkyrim = true;
 
     // [LockOn], metres.
     float lockRange = 15.0f;

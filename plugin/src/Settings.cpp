@@ -100,4 +100,12 @@ void Settings::Load()
     hitShake = ReadFloat(L"Pose", L"HitShake", hitShake);
     hitPadding = ReadFloat(L"Pose", L"HitPadding", hitPadding);
     hitSound = ReadString(L"Pose", L"HitSound", "");
+    {
+        auto lower = [](std::string v) {
+            std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return v;
+        };
+        rollsSkyrim = lower(ReadString(L"Pose", L"Rolls", "TKDodge")) != "er";
+        jumpsSkyrim = lower(ReadString(L"Pose", L"Jumps", "Skyrim")) != "er";
+    }
 }

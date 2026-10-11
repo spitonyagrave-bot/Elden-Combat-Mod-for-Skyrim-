@@ -6,6 +6,7 @@
 #include <spdlog/sinks/basic_file_sink.h>
 
 #include <algorithm>
+#include <cctype>
 #include <array>
 #include <atomic>
 #include <cmath>

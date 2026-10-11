@@ -87,6 +87,7 @@ typedef struct ErOutput {
     uint8_t guarding; /* raising or holding the guard */
     uint8_t invincible, airborne;
     uint8_t interruptible; /* Activate may go through to Skyrim */
+    uint8_t air_attack;    /* a jump attack is under way in the air */
     float stamina;         /* 0..1 */
     uint8_t hit_live;
     ErVec3 sweep_a[ER_SWEEP_STEPS];
