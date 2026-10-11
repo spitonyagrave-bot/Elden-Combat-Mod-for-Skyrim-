@@ -33,6 +33,8 @@ private:
     static void SetBlock(RE::PlayerCharacter* player, bool on);
     static void ApplyRootMotion(RE::PlayerCharacter* player, const ErWorld& world, const ErOutput& out, bool acting);
     static void ReleaseMovement();
+    // The part of a root-motion step Skyrim's collision lets through.
+    static RE::NiPoint3 Collide(RE::PlayerCharacter* player, RE::NiPoint3 move);
     static void CoreHits(RE::PlayerCharacter* player, const ErOutput& out);
     // Elden Ring's lock-on: the enemy nearest the middle of the view.
     static RE::Actor* FindLockTarget(RE::PlayerCharacter* player, float heading);

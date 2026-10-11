@@ -358,10 +358,92 @@ void Bridge::ApplyRootMotion(RE::PlayerCharacter* player, const ErWorld& world, 
     if (step < 0.01f || step > 60.0f) {
         return;
     }
+    RE::NiPoint3 move(dx, dy, 0.0f);
+    // Skyrim's collision: walls, rocks, furniture and other actors stop the
+    // move, and a glancing wall lets it slide along.
+    move = Collide(player, move);
+    if (move.x * move.x + move.y * move.y < 0.0001f) {
+        return;
+    }
     RE::NiPoint3 pos = player->GetPosition();
-    pos.x += dx;
-    pos.y += dy;
+    pos.x += move.x;
+    pos.y += move.y;
     player->SetPosition(pos, true);
+}
+
+RE::NiPoint3 Bridge::Collide(RE::PlayerCharacter* player, RE::NiPoint3 move)
+{
+    auto* cell = player->GetParentCell();
+    auto* world = cell ? cell->GetbhkWorld() : nullptr;
+    if (!world) {
+        return RE::NiPoint3();  // no physics to ask: don't move
+    }
+    std::uint32_t filter = 0;
+    player->GetCollisionFilterInfo(filter);
+    // The player's own collision group (so the ray ignores the player),
+    // tested like a character controller.
+    filter = (filter & 0xFFFF0000) | static_cast<std::uint32_t>(RE::COL_LAYER::kCharController);
+    const float scale = RE::bhkWorld::GetWorldScale();
+    constexpr float kRadius = 30.0f;  // a little more than the player's capsule
+    constexpr std::array kHeights{ 40.0f, 75.0f, 110.0f };  // above a stair step, hips, chest
+
+    // Up to two passes: straight, then sliding along what was hit.
+    for (int pass = 0; pass < 2; ++pass) {
+        const float length = std::sqrt(move.x * move.x + move.y * move.y);
+        if (length < 0.01f) {
+            return RE::NiPoint3();
+        }
+        const RE::NiPoint3 dir(move.x / length, move.y / length, 0.0f);
+        float allowed = length;
+        RE::NiPoint3 normal;
+        bool blocked = false;
+        const auto base = player->GetPosition();
+        for (const float h : kHeights) {
+            const RE::NiPoint3 from(base.x, base.y, base.z + h);
+            const RE::NiPoint3 to = from + dir * (length + kRadius);
+            RE::bhkPickData pick;
+            pick.rayInput.from = RE::hkVector4(from * scale);
+            pick.rayInput.to = RE::hkVector4(to * scale);
+            pick.rayInput.filterInfo = filter;
+            {
+                RE::BSReadLockGuard lock(world->worldLock);
+                world->PickObject(pick);
+            }
+            if (!pick.rayOutput.HasHit()) {
+                continue;
+            }
+            const float free = pick.rayOutput.hitFraction * (length + kRadius) - kRadius;
+            if (free < allowed) {
+                allowed = std::max(free, 0.0f);
+                alignas(16) float n[4];
+                _mm_store_ps(n, pick.rayOutput.normal.quad);
+                normal = RE::NiPoint3(n[0], n[1], 0.0f);
+                blocked = true;
+            }
+        }
+        if (!blocked) {
+            return move;
+        }
+        if (pass == 1) {
+            return dir * allowed;
+        }
+        // Go as far as the obstacle allows, then slide the rest along it.
+        const RE::NiPoint3 done = dir * allowed;
+        RE::NiPoint3 rest = move - done;
+        const float nl = std::sqrt(normal.x * normal.x + normal.y * normal.y);
+        if (nl < 1e-4f) {
+            return done;
+        }
+        normal = normal / nl;
+        const float into = rest.x * normal.x + rest.y * normal.y;
+        if (into < 0.0f) {
+            rest = rest - normal * into;
+        }
+        // Check the slid move again (from the start: the part before the
+        // obstacle is short and clear).
+        move = done + rest;
+    }
+    return move;
 }
 
 void Bridge::ReleaseMovement()
