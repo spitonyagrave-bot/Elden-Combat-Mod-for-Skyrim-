@@ -252,6 +252,8 @@ pub struct ErCombat {
     /// (above 60 fps most frames have none): kept for the next tick, so no
     /// press is lost.
     carry: Option<Input>,
+    /// The pose's lift, set on simulation ticks only.
+    lift: f32,
 }
 
 impl ErCombat {
@@ -267,6 +269,7 @@ impl ErCombat {
             air_still: 0.0,
             held_at: None,
             carry: None,
+            lift: 0.0,
         }
     }
 
@@ -321,6 +324,14 @@ impl ErCombat {
         }
         if !ticked {
             self.carry = Some(first);
+        } else {
+            // While Skyrim carries the jump (the ground reported far below)
+            // the root-local pose needs no lift: the simulation's arc only
+            // differs from Skyrim's by a tick's step, which, shown on tick
+            // frames and not between them, shook the body in the air.
+            let carried = world.ground_z < world.position.z - MAX_LIFT;
+            let height = self.player.pos.y * UNITS_PER_METRE - world.position.z;
+            self.lift = if carried { 0.0 } else { height.clamp(0.0, MAX_LIFT) };
         }
         self.output()
     }
@@ -354,8 +365,7 @@ impl ErCombat {
     /// root-local, so a jump Skyrim carries itself adds nothing; never more
     /// than a jump's height, whatever the ground says.
     pub fn lift(&self) -> f32 {
-        let skyrim = self.last_z.map_or(self.player.pos.y * UNITS_PER_METRE, |z| z);
-        (self.player.pos.y * UNITS_PER_METRE - skyrim).clamp(0.0, MAX_LIFT)
+        self.lift
     }
 
     pub fn player(&self) -> &Player {
@@ -1045,6 +1055,28 @@ mod tests {
             world.position = ErVec3 { x: out.position.x, y: out.position.y, z };
             input = ErInput::default();
             assert!(c.lift() <= MAX_LIFT && c.lift() < 100.0, "lift {} at frame {i}", c.lift());
+        }
+    }
+
+    /// Above 60 fps, during a jump Skyrim carries, the lift must not flicker
+    /// between tick and no-tick frames (the body tore in the air).
+    #[test]
+    fn lift_stays_still_while_skyrim_carries_the_jump() {
+        let fast = 1.0 / 144.0;
+        let mut c = ErCombat::new(ErVec3::default());
+        let mut world = ErWorld::default();
+        let mut input = ErInput::default();
+        tap(&mut input.jump);
+        for i in 0..200 {
+            let t = i as f32 * fast;
+            let z = (350.0 * t - 343.0 * t * t).max(0.0);
+            world.ground_z = if z > 0.0 { -10000.0 } else { 0.0 };
+            world.position.z = z;
+            c.update(fast, &input, &world);
+            input = ErInput::default();
+            if z > 0.0 {
+                assert_eq!(c.lift(), 0.0, "lift {} at frame {i}", c.lift());
+            }
         }
     }
 

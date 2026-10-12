@@ -157,8 +157,13 @@ void Bridge::Tick(RE::PlayerCharacter* player, float delta)
     // player: the core stays airborne for as long as Skyrim has the player
     // in the air (room for the jump attack), and lands when Skyrim does.
     // (Only then: running down stairs must not count as a fall.)
+    // Running off a ledge falls too: once Skyrim has had the player in the
+    // air for a moment (longer than a step down stairs), the core falls with
+    // it instead of running on in the air.
+    midairTime = player->IsInMidair() ? midairTime + delta : 0.0f;
     world.ground_z = player->GetPosition().z;
-    if (player->IsInMidair() && (lastState == ER_STATE_AIR || (lastState == ER_STATE_ACTION && lastKind == ER_ACTION_JUMP))) {
+    if (player->IsInMidair() && (lastState == ER_STATE_AIR || (lastState == ER_STATE_ACTION && lastKind == ER_ACTION_JUMP) ||
+                                    midairTime > 0.2f)) {
         world.ground_z -= 10000.0f;
     }
     world.in_combat = player->IsInCombat();
@@ -219,7 +224,7 @@ void Bridge::Tick(RE::PlayerCharacter* player, float delta)
         ReleaseMovement();
     }
     if (ownMovement) {
-        Walk(player, world, out, delta);
+        Walk(player, world, out);
         if (target) {
             const auto to = target->GetPosition() - player->GetPosition();
             Movement::SteerCamera(player, std::atan2(to.x, to.y), delta);
@@ -244,8 +249,11 @@ void Bridge::Tick(RE::PlayerCharacter* player, float delta)
         lastSerial = out.action_serial;
         hitThisSwing.clear();
         PlayAction(player, out);
-        if (out.action_kind == ER_ACTION_JUMP_ATTACK_LAND && Settings::Get().landShake > 0.0f) {
-            RE::ShakeCamera(Settings::Get().landShake, player->GetPosition(), 0.35f);
+        if (out.action_kind == ER_ACTION_JUMP_ATTACK_LAND) {
+            if (Settings::Get().landShake > 0.0f) {
+                RE::ShakeCamera(Settings::Get().landShake, player->GetPosition(), 0.35f);
+            }
+            GroundImpact(player);
         }
     }
     if (out.hit_live && !hitLive) {
@@ -288,7 +296,12 @@ void Bridge::SetCombatMode(bool on)
     Integrations::SetErMode(on);
     Movement::SetActive(on && Settings::Get().ownMovement);
     Input::Get()->padOwned = on;
-    walkValid = false;
+    midairTime = 0.0f;
+    if (!on) {
+        if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+            SetSprint(player, false);
+        }
+    }
     if (!on && heldMovement) {
         ReleaseMovement();
     }
@@ -509,12 +522,12 @@ RE::NiPoint3 Bridge::Collide(RE::PlayerCharacter* player, RE::NiPoint3 move)
     return move;
 }
 
-void Bridge::Walk(RE::PlayerCharacter* player, const ErWorld& world, const ErOutput& out, float delta)
+void Bridge::Walk(RE::PlayerCharacter* player, const ErWorld& world, const ErOutput& out)
 {
     if (heldMovement) {
         // Root motion moves the player during this action.
+        SetSprint(player, false);
         Movement::SetMove(0.0f, 0.0f);
-        walkValid = false;
         return;
     }
     // Where the core ran this frame, in the player's own frame (Skyrim's
@@ -523,8 +536,8 @@ void Bridge::Walk(RE::PlayerCharacter* player, const ErWorld& world, const ErOut
     const float dy = out.position.y - world.position.y;
     const float step = std::sqrt(dx * dx + dy * dy);
     if (out.speed < 5.0f || out.state == ER_STATE_ACTION) {
+        SetSprint(player, false);
         Movement::SetMove(0.0f, 0.0f);
-        walkValid = false;
         walkDirValid = false;
         return;
     }
@@ -550,24 +563,10 @@ void Bridge::Walk(RE::PlayerCharacter* player, const ErWorld& world, const ErOut
     const float amount = std::clamp(out.speed / run, 0.2f, 1.0f);
     Movement::SetMove(right * amount, forward * amount);
 
-    // Skyrim's run is all it has with the sprint handler held back; the rest
-    // of Elden Ring's sprint speed is added along the run, through the same
-    // collision test as root motion.
-    const auto now = player->GetPosition();
-    if (out.sprinting && out.state == ER_STATE_GROUND && walkValid && delta > 0.0f) {
-        const float ownX = now.x - walkEnd.x, ownY = now.y - walkEnd.y;
-        const float skyrimStep = std::sqrt(ownX * ownX + ownY * ownY);
-        const float want = out.speed * delta;
-        const float extra = std::clamp(want - skyrimStep, 0.0f, want * 0.6f);
-        if (extra > 0.01f) {
-            const RE::NiPoint3 move = Collide(player, RE::NiPoint3(wx * extra, wy * extra, 0.0f));
-            if (move.x * move.x + move.y * move.y > 0.0001f) {
-                player->SetPosition(RE::NiPoint3(now.x + move.x, now.y + move.y, now.z), true);
-            }
-        }
-    }
-    walkEnd = player->GetPosition();
-    walkValid = true;
+    // Skyrim's own sprint (its speed, stamina and character controller), not
+    // extra steps on top of its run: those dragged the player along at the
+    // old height and sank them into slopes.
+    SetSprint(player, out.sprinting && out.state == ER_STATE_GROUND);
 }
 
 void Bridge::ReleaseMovement()
@@ -665,9 +664,110 @@ void Bridge::Stagger(RE::PlayerCharacter* player, RE::Actor* target, float magni
     target->NotifyAnimationGraph("staggerStart");
 }
 
+namespace
+{
+    std::string Lower(std::string v)
+    {
+        std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return v;
+    }
+
+    struct SwingSound
+    {
+        std::string name;
+        RE::BGSSoundDescriptorForm* form;
+    };
+
+    // Every sound descriptor the game knows whose editor ID says "swing",
+    // listed once in ERCombat.log (guessed names found nothing last time).
+    const std::vector<SwingSound>& SwingSounds()
+    {
+        static std::vector<SwingSound> sounds;
+        static bool scanned = false;
+        if (scanned) {
+            return sounds;
+        }
+        scanned = true;
+        std::size_t total = 0, named = 0;
+        if (auto* data = RE::TESDataHandler::GetSingleton()) {
+            for (auto* form : data->GetFormArray<RE::BGSSoundDescriptorForm>()) {
+                if (!form) {
+                    continue;
+                }
+                ++total;
+                const char* id = form->GetFormEditorID();
+                if (!id || !*id) {
+                    continue;
+                }
+                ++named;
+                const auto lower = Lower(id);
+                if (lower.find("swing") != std::string::npos || lower.find("whoosh") != std::string::npos) {
+                    sounds.push_back({ id, form });
+                }
+            }
+        }
+        logger::info("Sounds: {} descriptors, {} with editor IDs, {} swing sounds", total, named, sounds.size());
+        for (const auto& sound : sounds) {
+            logger::info("  swing sound: {} ({:08X})", sound.name, sound.form->GetFormID());
+        }
+        return sounds;
+    }
+
+    // The swing sound that best fits the weapon: blade or blunt, one hand or
+    // two, by the words in the sounds' editor IDs.
+    RE::BGSSoundDescriptorForm* PickSwing(const RE::TESObjectWEAP* weapon, bool heavy)
+    {
+        const bool blunt = weapon && (weapon->IsOneHandedMace() || weapon->HasKeywordString("WeapTypeWarhammer"));
+        const bool axe = weapon && (weapon->IsOneHandedAxe() || weapon->HasKeywordString("WeapTypeBattleaxe"));
+        const bool staff = weapon && weapon->IsStaff();
+        RE::BGSSoundDescriptorForm* best = nullptr;
+        int bestScore = -1000;
+        for (const auto& sound : SwingSounds()) {
+            const auto n = Lower(sound.name);
+            auto has = [&](const char* word) { return n.find(word) != std::string::npos; };
+            int score = 0;
+            // Sounds for magic, creatures or bows are not a weapon's whoosh.
+            if (has("spell") || has("mag") || has("bow") || has("arrow") || has("dragon") || has("creature") ||
+                has("troll") || has("bear") || has("giant") || has("nostamina") || has("fail")) {
+                score -= 50;
+            }
+            if (has("wpn")) {
+                score += 5;
+            }
+            if (!weapon) {
+                score += has("unarmed") || has("fist") || has("hand2hand") ? 30 : -10;
+            } else {
+                if (has("unarmed")) {
+                    score -= 20;
+                }
+                if (blunt || staff) {
+                    score += has("blunt") || has("mace") || has("hammer") ? 20 : 0;
+                } else if (axe) {
+                    score += has("axe") ? 20 : has("blade") ? 8 : 0;
+                } else {
+                    score += has("blade") || has("sword") ? 20 : 0;
+                }
+                const bool big = has("2hand") || has("large") || has("heavy") || has("big") || has("great");
+                const bool small = has("1hand") || has("small") || has("light") || has("dagger");
+                if (heavy) {
+                    score += big ? 10 : small ? -5 : 0;
+                } else {
+                    score += small || has("medium") ? 6 : big ? -3 : 0;
+                }
+            }
+            if (score > bestScore) {
+                best = sound.form;
+                bestScore = score;
+            }
+        }
+        return best;
+    }
+}
+
 void Bridge::PlaySwing(RE::PlayerCharacter* player, const ErOutput& out)
 {
-    if (!Settings::Get().swingSound) {
+    const auto& settings = Settings::Get();
+    if (!settings.swingSound) {
         return;
     }
     const bool left = out.action_kind == ER_ACTION_LEFT_ATTACK;
@@ -678,42 +778,79 @@ void Bridge::PlaySwing(RE::PlayerCharacter* player, const ErOutput& out)
         return;
     }
     RE::BSSoundHandle sound;
-    // The weapon's own swing sound when it has one, else Skyrim's swing for
-    // its kind of weapon (the first descriptor this game knows).
-    if (weapon && weapon->attackSound) {
+    const char* from = nullptr;
+    // ERCombat.ini's choice first, then the weapon's own swing sound, then
+    // the best match among the game's swing sounds.
+    if (!settings.swingSoundID.empty()) {
+        if (auto* chosen = RE::TESForm::LookupByEditorID<RE::BGSSoundDescriptorForm>(settings.swingSoundID)) {
+            audio->BuildSoundDataFromDescriptor(sound, chosen);
+        }
+        if (!sound.IsValid()) {
+            audio->BuildSoundDataFromEditorID(sound, settings.swingSoundID.c_str(), 0x1A);
+        }
+        from = "ERCombat.ini SwingSoundID";
+    }
+    if (!sound.IsValid() && weapon && weapon->attackSound) {
         audio->BuildSoundDataFromDescriptor(sound, weapon->attackSound);
+        from = "the weapon's attack sound";
     }
     if (!sound.IsValid()) {
-        const bool heavy = weapon && (weapon->IsTwoHandedSword() || weapon->IsTwoHandedAxe() || out.hit_motion >= 1.2f);
-        const bool blunt = weapon && (weapon->IsOneHandedMace() || (weapon->IsTwoHandedAxe() && weapon->HasKeywordString("WeapTypeWarhammer")));
-        static const std::array<const char*, 4> kBlade{ "WPNSwingBladeMediumSD", "WPNSwingBladeMedium", "WPNBlade1HandSwingSD", "WPNSwingBlade1HandSD" };
-        static const std::array<const char*, 4> kBladeLarge{ "WPNSwingBladeLargeSD", "WPNSwingBladeLarge", "WPNBlade2HandSwingSD", "WPNSwingBlade2HandSD" };
-        static const std::array<const char*, 4> kBlunt{ "WPNSwingBluntMediumSD", "WPNSwingBluntMedium", "WPNBlunt1HandSwingSD", "WPNSwingBlunt1HandSD" };
-        static const std::array<const char*, 4> kBluntLarge{ "WPNSwingBluntLargeSD", "WPNSwingBluntLarge", "WPNBlunt2HandSwingSD", "WPNSwingBlunt2HandSD" };
-        static const std::array<const char*, 4> kUnarmed{ "WPNSwingUnarmedSD", "WPNSwingUnarmed", "NPCHumanUnarmedSwingSD", "WPNSwingBladeMediumSD" };
-        const auto& names = !weapon ? kUnarmed : blunt ? (heavy ? kBluntLarge : kBlunt) : (heavy ? kBladeLarge : kBlade);
-        for (const char* name : names) {
-            audio->BuildSoundDataFromEditorID(sound, name, 0x1A);
-            if (sound.IsValid()) {
-                if (!swingLogged) {
-                    swingLogged = true;
-                    logger::info("Swing sound: {}", name);
-                }
-                break;
-            }
+        const bool heavy = (weapon && (weapon->IsTwoHandedSword() || weapon->IsTwoHandedAxe())) || out.hit_motion >= 1.2f;
+        if (auto* picked = PickSwing(weapon, heavy)) {
+            audio->BuildSoundDataFromDescriptor(sound, picked);
+            from = picked->GetFormEditorID();
         }
+    }
+    if (!sound.IsValid()) {
+        // Skyrim's unarmed whoosh (its attack animations call it by name).
+        audio->BuildSoundDataFromEditorID(sound, "WPNSwingUnarmed", 0x1A);
+        from = "WPNSwingUnarmed";
     }
     if (!sound.IsValid()) {
         if (!swingLogged) {
             swingLogged = true;
-            logger::info("Swing sound: none of Skyrim's swing sounds found (set [Pose] HitSound or a weapon attack sound)");
+            logger::info("Swing sound: none found (set [Impact] SwingSoundID to one of the swing sounds listed above)");
         }
         return;
+    }
+    if (!swingLogged) {
+        swingLogged = true;
+        logger::info("Swing sound: {}", from ? from : "?");
     }
     if (auto* node = player->Get3D()) {
         sound.SetObjectToFollow(node);
     }
     sound.Play();
+}
+
+void Bridge::GroundImpact(RE::PlayerCharacter* player)
+{
+    if (!Settings::Get().groundImpact) {
+        return;
+    }
+    auto* form = player->GetEquippedObject(false);
+    auto* weapon = form ? form->As<RE::TESObjectWEAP>() : nullptr;
+    auto* impacts = RE::BGSImpactManager::GetSingleton();
+    if (!weapon || !weapon->impactDataSet || !impacts) {
+        return;
+    }
+    // Straight down from the weapon: the impact for whatever the ground is
+    // made of (its sound, dust and mark), as when Skyrim's weapons strike.
+    RE::NiPoint3 down(0.0f, 0.0f, -1.0f);
+    const bool played = impacts->PlayImpactEffect(player, weapon->impactDataSet, "WEAPON", down, 250.0f, false, false);
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        logger::info("Ground impact on landing: {}", played ? "played" : "nothing under the weapon");
+    }
+}
+
+void Bridge::SetSprint(RE::PlayerCharacter* player, bool on)
+{
+    // What Skyrim's sprint key sets (its sprint handler is held back in
+    // Elden Ring mode); Skyrim then sprints while moving forward with stamina.
+    // Set every frame: Skyrim clears it when the stamina runs out.
+    player->GetPlayerRuntimeData().playerFlags.isSprinting = on;
 }
 
 RE::Actor* Bridge::SwitchTarget(RE::PlayerCharacter* player, RE::Actor* current, int side)

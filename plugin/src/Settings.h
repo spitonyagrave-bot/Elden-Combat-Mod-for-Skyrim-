@@ -73,6 +73,12 @@ struct Settings
     // [Impact] SwingSound: the weapon whooshes when a swing goes live.
     // LandShake: camera shake when a jump attack lands.
     bool swingSound = true;
+    // Editor ID of the swing sound to use instead of the one picked from the
+    // game's sound list (empty: pick one; ERCombat.log lists the candidates).
+    std::string swingSoundID;
+    // 1: a jump attack's landing plays the weapon's own impact on the
+    // ground under it (dirt, stone...).
+    bool groundImpact = true;
     // Stagger on hit with a two-handed weapon (light swings) and for every
     // heavy, charged or jump attack, times the swing's motion value.
     float staggerLight = 0.25f;

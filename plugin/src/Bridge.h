@@ -34,18 +34,23 @@ private:
     static void ApplyRootMotion(RE::PlayerCharacter* player, const ErWorld& world, const ErOutput& out, bool acting);
     static void ReleaseMovement();
     // Elden Ring's running: Skyrim's movement input from the core's step.
-    static void Walk(RE::PlayerCharacter* player, const ErWorld& world, const ErOutput& out, float delta);
+    static void Walk(RE::PlayerCharacter* player, const ErWorld& world, const ErOutput& out);
     // The part of a root-motion step Skyrim's collision lets through.
     static RE::NiPoint3 Collide(RE::PlayerCharacter* player, RE::NiPoint3 move);
     static void CoreHits(RE::PlayerCharacter* player, const ErOutput& out);
     // Elden Ring's lock-on: the enemy nearest the middle of the view.
     // The next target to the left (-1) or right (+1) of the current one.
     static RE::Actor* SwitchTarget(RE::PlayerCharacter* player, RE::Actor* current, int side);
-    // A whoosh when a swing goes live (Skyrim's swing sounds come from its
-    // own attack animations, which don't play in Elden Ring mode).
     // Rocks the target back (Skyrim's stagger, 0..1: a flinch to a full stagger).
     static void Stagger(RE::PlayerCharacter* player, RE::Actor* target, float magnitude);
+    // A whoosh when a swing goes live (Skyrim's swing sounds come from its
+    // own attack animations, which don't play in Elden Ring mode).
     static void PlaySwing(RE::PlayerCharacter* player, const ErOutput& out);
+    // The weapon striking the ground (a jump attack landing): the weapon's
+    // own impact for the ground's material, sound and dust.
+    static void GroundImpact(RE::PlayerCharacter* player);
+    // Skyrim's sprint, asked for by the core's sprint.
+    static void SetSprint(RE::PlayerCharacter* player, bool on);
     static RE::Actor* FindLockTarget(RE::PlayerCharacter* player, float heading);
     static RE::Actor* UpdateLock(RE::PlayerCharacter* player, bool pressed, float heading);
     static void PlayAction(RE::PlayerCharacter* player, const ErOutput& out);
@@ -61,8 +66,9 @@ private:
     static inline bool iframes = false;
     static inline bool blocking = false;
     static inline bool heldMovement = false;
-    static inline bool walkValid = false;
-    static inline RE::NiPoint3 walkEnd;
+    // Seconds Skyrim has had the player in the air without a jump (running
+    // off a ledge).
+    static inline float midairTime = 0.0f;
     static inline bool walkDirValid = false;
     static inline float walkDirX = 0.0f, walkDirY = 0.0f;
     static inline float shownYaw = 0.0f;

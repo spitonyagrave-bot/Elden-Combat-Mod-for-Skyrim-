@@ -112,6 +112,8 @@ void Settings::Load()
     autoTwoHand = GetPrivateProfileIntW(L"Weapons", L"AutoTwoHand", 1, kPath) != 0;
     lockFlickMouse = ReadFloat(L"LockOn", L"FlickMouse", lockFlickMouse);
     swingSound = GetPrivateProfileIntW(L"Impact", L"SwingSound", 1, kPath) != 0;
+    swingSoundID = ReadString(L"Impact", L"SwingSoundID", "");
+    groundImpact = GetPrivateProfileIntW(L"Impact", L"GroundImpact", 1, kPath) != 0;
     landShake = ReadFloat(L"Impact", L"LandShake", landShake);
     staggerLight = ReadFloat(L"Impact", L"StaggerLight", staggerLight);
     staggerHeavy = ReadFloat(L"Impact", L"StaggerHeavy", staggerHeavy);
