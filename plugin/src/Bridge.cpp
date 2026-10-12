@@ -850,7 +850,14 @@ void Bridge::SetSprint(RE::PlayerCharacter* player, bool on)
     // What Skyrim's sprint key sets (its sprint handler is held back in
     // Elden Ring mode); Skyrim then sprints while moving forward with stamina.
     // Set every frame: Skyrim clears it when the stamina runs out.
-    player->GetPlayerRuntimeData().playerFlags.isSprinting = on;
+    // The multi-runtime CommonLib build hides playerFlags, so it is reached
+    // by its offset (SE 0xBD8, AE 0xBE0; isSprinting is byte 5, bit 0).
+    if (REL::Module::IsVR()) {
+        return;
+    }
+    const std::size_t flags = REL::Module::get().version() >= SKSE::RUNTIME_SSE_1_6_629 ? 0xBE0 : 0xBD8;
+    auto* bits = reinterpret_cast<std::uint8_t*>(player) + flags + 5;
+    *bits = on ? static_cast<std::uint8_t>(*bits | 1u) : static_cast<std::uint8_t>(*bits & ~1u);
 }
 
 RE::Actor* Bridge::SwitchTarget(RE::PlayerCharacter* player, RE::Actor* current, int side)
