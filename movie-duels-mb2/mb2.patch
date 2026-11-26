@@ -1,3 +1,25 @@
+diff --git a/code/cgame/cg_draw.cpp b/code/cgame/cg_draw.cpp
+index eaf1f08..845b6db 100644
+--- a/code/cgame/cg_draw.cpp
++++ b/code/cgame/cg_draw.cpp
+@@ -8399,6 +8399,8 @@ CG_Draw2D
+ */
+ extern void CG_SaberClashFlare();
+ 
++extern void MB2_DrawWheel();
++
+ static void CG_Draw2D()
+ {
+ 	char text[1024] = { 0 };
+@@ -8505,6 +8507,8 @@ static void CG_Draw2D()
+ 		CG_DrawHealthBars();
+ 	}
+ 
++	MB2_DrawWheel(); // MB2 direction wheel
++
+ 	if (cg_SerenityJediEngineMode.integer)
+ 	{
+ 		if (cg.snap->ps.powerups[PW_CLOAKED])
 diff --git a/code/game/CMakeLists.txt b/code/game/CMakeLists.txt
 index dc9e68d..0f7889d 100644
 --- a/code/game/CMakeLists.txt
@@ -62,10 +84,10 @@ index 3bbd3f3..9707da3 100644
  					}
 diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
 new file mode 100644
-index 0000000..7e3cdd5
+index 0000000..aa3c681
 --- /dev/null
 +++ b/code/game/wp_saber_mb2.cpp
-@@ -0,0 +1,509 @@
+@@ -0,0 +1,683 @@
 +/*
 +===========================================================================
 +MB2-style saber blocking layer for Movie Duels (SP).
@@ -115,6 +137,9 @@ index 0000000..7e3cdd5
 +extern qboolean pm_saber_innonblockable_attack(int anim);
 +extern qboolean PM_SaberInParry(int move);
 +extern void CGCam_BlockShakeSP(float intensity, int duration);
++extern qboolean PM_SaberInStart(int move);
++extern qboolean PM_SaberInAttack(int move);
++extern qboolean PM_SaberInTransition(int move);
 +extern void G_StartStasisEffect_FORCE_LEVEL_1(const gentity_t* ent, int me_flags, int length, float time_scale, int spin_time);
 +extern cvar_t* g_SerenityJediEngineMode;
 +extern cvar_t* d_slowmoaction;
@@ -369,6 +394,8 @@ index 0000000..7e3cdd5
 +// Cooldowns per entity (MBlock attempt, NPC disarm)
 +// ---------------------------------------------------------------------------
 +static int mb2_mblock_ready[MAX_GENTITIES];
++static int mb2_hud_perfect_time; // level.time of the player's last perfect block (wheel flashes blue)
++static int mb2_hud_disarm_time;  // level.time of the player's last MBlock disarm (wheel flashes gold)
 +static int mb2_npc_disarm_ready[MAX_GENTITIES];
 +
 +static qboolean MB2_IsPlayer(const gentity_t* ent)
@@ -416,6 +443,7 @@ index 0000000..7e3cdd5
 +	if (MB2_IsPlayer(blocker))
 +	{
 +		CGCam_BlockShakeSP(0.35f, 80);
++		mb2_hud_perfect_time = level.time;
 +	}
 +	G_Sound(blocker, G_SoundIndex(va("sound/weapons/saber/saber_perfectblock%d.mp3", Q_irand(1, 3))));
 +	MB2_MarkBlocked(blocker, attacker, saber_num, blade_num);
@@ -521,6 +549,7 @@ index 0000000..7e3cdd5
 +				mb2_mblock_ready[blocker->s.number] = level.time + 1500;
 +				MB2_PerfectBlockEffects(blocker, attacker, hit_loc, saber_num, blade_num);
 +				sab_beh_saber_should_be_disarmed_attacker(attacker, saber_num);
++				mb2_hud_disarm_time = level.time;
 +				if (d_slowmoaction->integer)
 +				{
 +					G_StartStasisEffect_FORCE_LEVEL_1(blocker, MEF_NO_SPIN, 250, 0.3f, 0);
@@ -574,4 +603,171 @@ index 0000000..7e3cdd5
 +
 +	MB2_NormalBlock(blocker, attacker, hit_loc, saber_num, blade_num);
 +	return qtrue;
++}
++
++// ---------------------------------------------------------------------------
++// MB2 direction wheel (HUD), drawn around the crosshair.
++//   grey ring  = wheel (shown while a saber enemy is close)
++//   red        = where the enemy's swing comes from (bright when it lands)
++//   white      = your block direction (aim), only while holding block
++//   green      = your aim matches the swing: perfect block ready
++//   blue flash = perfect block, gold flash = disarm (MBlock)
++// g_MB2Wheel 0 hides it, g_MB2WheelSize sets the radius.
++// ---------------------------------------------------------------------------
++static cvar_t* mb2_wheel;
++static cvar_t* mb2_wheel_size;
++
++static gentity_t* MB2_HudEnemy(const gentity_t* player)
++{
++	gentity_t* best = nullptr;
++	float best_dist = 400.0f * 400.0f;
++	qboolean best_attacking = qfalse;
++
++	for (int i = 1; i < globals.num_entities; i++)
++	{
++		gentity_t* ent = &g_entities[i];
++		if (!ent->inuse || !ent->client || ent->health <= 0)
++		{
++			continue;
++		}
++		if (ent->client->ps.weapon != WP_SABER || !ent->client->ps.SaberActive())
++		{
++			continue;
++		}
++		if (ent->client->playerTeam == player->client->playerTeam && ent->enemy != player)
++		{
++			continue; // allies only count when they fight you
++		}
++		const float dist = DistanceSquared(ent->client->ps.origin, player->client->ps.origin);
++		if (dist > 400.0f * 400.0f)
++		{
++			continue;
++		}
++		const int move = ent->client->ps.saber_move;
++		const qboolean attacking = (PM_SaberInStart(move) || PM_SaberInAttack(move) || PM_SaberInTransition(move))
++			&& dist < 200.0f * 200.0f ? qtrue : qfalse;
++
++		// a close enemy that is swinging beats any idle one
++		if (attacking && !best_attacking || attacking == best_attacking && dist < best_dist)
++		{
++			best = ent;
++			best_dist = dist;
++			best_attacking = attacking;
++		}
++	}
++	return best;
++}
++
++static void MB2_WheelBox(const float cx, const float cy, const int col, const int row, const float radius,
++	const float size, const float* color)
++{
++	const float diag = (col != 0 && row != 0) ? 0.7071f : 1.0f;
++	const float x = cx + col * radius * diag - size * 0.5f;
++	const float y = cy - row * radius * diag - size * 0.5f;
++	CG_FillRect(x, y, size, size, color);
++}
++
++void MB2_DrawWheel()
++{
++	MB2_RegisterCvars();
++	if (!mb2_wheel)
++	{
++		mb2_wheel = gi.cvar("g_MB2Wheel", "1", CVAR_ARCHIVE);
++		mb2_wheel_size = gi.cvar("g_MB2WheelSize", "40", CVAR_ARCHIVE);
++	}
++	if (!mb2_on->integer || !mb2_wheel->integer || g_SerenityJediEngineMode->integer != 2)
++	{
++		return;
++	}
++	const gentity_t* player = &g_entities[0];
++	if (!player->inuse || !player->client || player->health <= 0)
++	{
++		return;
++	}
++	if (player->client->ps.weapon != WP_SABER || !player->client->ps.SaberActive())
++	{
++		return;
++	}
++	const gentity_t* enemy = MB2_HudEnemy(player);
++	const int since_perfect = level.time - mb2_hud_perfect_time;
++	const int since_disarm = level.time - mb2_hud_disarm_time;
++	const qboolean flash_perfect = mb2_hud_perfect_time && since_perfect >= 0 && since_perfect < 350 ? qtrue : qfalse;
++	const qboolean flash_disarm = mb2_hud_disarm_time && since_disarm >= 0 && since_disarm < 500 ? qtrue : qfalse;
++	if (!enemy && !flash_perfect && !flash_disarm)
++	{
++		return;
++	}
++
++	const float cx = 320.0f;
++	const float cy = 240.0f;
++	const float radius = mb2_wheel_size->value;
++	const float size = radius * 0.28f;
++
++	// ring
++	vec4_t ring = { 0.6f, 0.6f, 0.6f, 0.35f };
++	if (flash_disarm)
++	{
++		const float a = 1.0f - since_disarm / 500.0f;
++		VectorSet(ring, 1.0f, 0.8f, 0.2f);
++		ring[3] = 0.4f + 0.6f * a;
++	}
++	else if (flash_perfect)
++	{
++		const float a = 1.0f - since_perfect / 350.0f;
++		VectorSet(ring, 0.25f, 0.55f, 1.0f);
++		ring[3] = 0.4f + 0.6f * a;
++	}
++	for (int c = -1; c <= 1; c++)
++	{
++		for (int r = -1; r <= 1; r++)
++		{
++			if (c || r)
++			{
++				MB2_WheelBox(cx, cy, c, r, radius, size * 0.55f, ring);
++			}
++		}
++	}
++	if (!enemy)
++	{
++		return;
++	}
++
++	// incoming swing
++	const int move = enemy->client->ps.saber_move;
++	qboolean swing = qfalse;
++	mb2Zone_t incoming = { 0, 0 };
++	if (PM_SaberInStart(move) || PM_SaberInAttack(move) || PM_SaberInTransition(move))
++	{
++		incoming = MB2_IncomingZone(saber_moveData[move].startQuad);
++		swing = incoming.col || incoming.row ? qtrue : qfalse;
++	}
++
++	// own block direction
++	const qboolean holding_block = player->client->ps.ManualBlockingFlags & 1 << HOLDINGBLOCK ? qtrue : qfalse;
++	mb2Zone_t aim = { 0, 0 };
++	if (holding_block)
++	{
++		aim = mb2_input->integer ? MB2_KeyZone(player) : MB2_AimZone(player, enemy);
++	}
++	const qboolean match = swing && holding_block && MB2_ZoneMatches(incoming, aim) ? qtrue : qfalse;
++
++	if (swing)
++	{
++		const float bright = PM_SaberInAttack(move) ? 1.0f : 0.6f;
++		vec4_t red = { 1.0f, 0.15f, 0.1f, bright };
++		if (match)
++		{
++			VectorSet(red, 0.2f, 1.0f, 0.3f);
++		}
++		MB2_WheelBox(cx, cy, incoming.col, incoming.row, radius * 1.18f, size, red);
++	}
++	if (holding_block && (aim.col || aim.row))
++	{
++		vec4_t white = { 1.0f, 1.0f, 1.0f, 0.85f };
++		if (match)
++		{
++			VectorSet(white, 0.2f, 1.0f, 0.3f);
++		}
++		MB2_WheelBox(cx, cy, aim.col, aim.row, radius * 0.8f, size * 0.8f, white);
++	}
 +}
