@@ -1,12 +1,12 @@
 diff --git a/code/cgame/cg_draw.cpp b/code/cgame/cg_draw.cpp
-index eaf1f08..845b6db 100644
+index eaf1f08..902485a 100644
 --- a/code/cgame/cg_draw.cpp
 +++ b/code/cgame/cg_draw.cpp
 @@ -8399,6 +8399,8 @@ CG_Draw2D
  */
  extern void CG_SaberClashFlare();
  
-+extern void MB2_DrawWheel();
++extern void MB2_DrawWheel(float aspect);
 +
  static void CG_Draw2D()
  {
@@ -15,7 +15,7 @@ index eaf1f08..845b6db 100644
  		CG_DrawHealthBars();
  	}
  
-+	MB2_DrawWheel(); // MB2 direction wheel
++	MB2_DrawWheel(cgs.glconfig.vidWidth > 0 ? 640.0f * cgs.glconfig.vidHeight / (480.0f * cgs.glconfig.vidWidth) : 1.0f); // MB2 direction wheel
 +
  	if (cg_SerenityJediEngineMode.integer)
  	{
@@ -103,10 +103,10 @@ index 3bbd3f3..41557d0 100644
  					}
 diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
 new file mode 100644
-index 0000000..ab40acd
+index 0000000..b6e34ec
 --- /dev/null
 +++ b/code/game/wp_saber_mb2.cpp
-@@ -0,0 +1,802 @@
+@@ -0,0 +1,804 @@
 +/*
 +===========================================================================
 +MB2-style saber blocking layer for Movie Duels (SP).
@@ -723,10 +723,11 @@ index 0000000..ab40acd
 +// Thin arc segment around the crosshair, drawn as a row of tiny dots.
 +// Zone (col,row) -> direction on screen; the aspect ratio is corrected so
 +// the ring stays round on widescreen.
++static float aspect_fix = 1.0f; // set each frame by MB2_DrawWheel
++
 +static void MB2_WheelArc(const float cx, const float cy, const int col, const int row, const float radius,
 +	const float thick, const float* color)
 +{
-+	const float aspect_fix = 640.0f * cgs.glconfig.vidHeight / (480.0f * (cgs.glconfig.vidWidth > 0 ? cgs.glconfig.vidWidth : 640));
 +	const float center = atan2f(static_cast<float>(row), static_cast<float>(col)); // 0 = right, pi/2 = up
 +	const float half = DEG2RAD(17.0f);
 +	const int dots = 9;
@@ -739,8 +740,9 @@ index 0000000..ab40acd
 +	}
 +}
 +
-+void MB2_DrawWheel()
++void MB2_DrawWheel(const float aspect)
 +{
++	aspect_fix = aspect > 0.0f ? aspect : 1.0f;
 +	MB2_RegisterCvars();
 +	if (!mb2_wheel)
 +	{
