@@ -125,10 +125,10 @@ index 3bbd3f3..41557d0 100644
  					}
 diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
 new file mode 100644
-index 0000000..d6ffdd9
+index 0000000..9013d60
 --- /dev/null
 +++ b/code/game/wp_saber_mb2.cpp
-@@ -0,0 +1,804 @@
+@@ -0,0 +1,777 @@
 +/*
 +===========================================================================
 +MB2-style saber blocking layer for Movie Duels (SP).
@@ -742,17 +742,26 @@ index 0000000..d6ffdd9
 +	return best;
 +}
 +
-+// Thin arc segment around the crosshair, drawn as a row of tiny dots.
-+// Zone (col,row) -> direction on screen; the aspect ratio is corrected so
-+// the ring stays round on widescreen.
++// MB2-style indicator: one short green arc next to the crosshair, only in
++// the direction a swing comes from. Nothing is drawn otherwise.
++// The aspect ratio is corrected so the arc stays round on widescreen.
 +static float aspect_fix = 1.0f; // set each frame by MB2_DrawWheel
++static mb2Zone_t mb2_hud_last_zone = { 0, 0 };
++
++static void MB2_SetColor(vec4_t c, const float r, const float g, const float b, const float a)
++{
++	c[0] = r;
++	c[1] = g;
++	c[2] = b;
++	c[3] = a;
++}
 +
 +static void MB2_WheelArc(const float cx, const float cy, const int col, const int row, const float radius,
 +	const float thick, const float* color)
 +{
 +	const float center = atan2f(static_cast<float>(row), static_cast<float>(col)); // 0 = right, pi/2 = up
-+	const float half = DEG2RAD(17.0f);
-+	const int dots = 9;
++	const float half = DEG2RAD(26.0f);
++	const int dots = 21;
 +	for (int i = 0; i < dots; i++)
 +	{
 +		const float a = center - half + 2.0f * half * i / (dots - 1);
@@ -769,7 +778,7 @@ index 0000000..d6ffdd9
 +	if (!mb2_wheel)
 +	{
 +		mb2_wheel = gi.cvar("g_MB2Wheel", "1", CVAR_ARCHIVE);
-+		mb2_wheel_size = gi.cvar("g_MB2WheelRadius", "19", CVAR_ARCHIVE);
++		mb2_wheel_size = gi.cvar("g_MB2IndicatorRadius", "11", CVAR_ARCHIVE);
 +	}
 +	if (!mb2_on->integer || !mb2_wheel->integer || g_SerenityJediEngineMode->integer != 2)
 +	{
@@ -784,93 +793,57 @@ index 0000000..d6ffdd9
 +	{
 +		return;
 +	}
-+	const gentity_t* enemy = MB2_HudEnemy(player);
-+	const int since_perfect = level.time - mb2_hud_perfect_time;
-+	const int since_disarm = level.time - mb2_hud_disarm_time;
-+	const qboolean flash_perfect = mb2_hud_perfect_time && since_perfect >= 0 && since_perfect < 350 ? qtrue : qfalse;
-+	const qboolean flash_disarm = mb2_hud_disarm_time && since_disarm >= 0 && since_disarm < 500 ? qtrue : qfalse;
-+	const int since_mbdef = level.time - mb2_hud_mbdef_time;
-+	const qboolean flash_mbdef = mb2_hud_mbdef_time && since_mbdef >= 0 && since_mbdef < 350 ? qtrue : qfalse;
-+	// the ring is always shown while the saber is on, so you can see the mod is active
 +
 +	const float cx = wheel_x;
 +	const float cy = wheel_y;
 +	const float radius = mb2_wheel_size->value;
-+	const float size = 0.9f; // dot size of the ring (640x480 units)
++	const float thick = 1.3f;
 +
-+	// ring
-+	vec4_t ring = { 0.85f, 0.85f, 0.85f, 0.22f };
-+	if (flash_disarm)
++	// short flash in the last direction after a block result (MB2 colours)
++	const int since_perfect = level.time - mb2_hud_perfect_time;
++	const int since_disarm = level.time - mb2_hud_disarm_time;
++	const int since_mbdef = level.time - mb2_hud_mbdef_time;
++	if (mb2_hud_last_zone.col || mb2_hud_last_zone.row)
 +	{
-+		const float a = 1.0f - since_disarm / 500.0f;
-+		VectorSet(ring, 0.25f, 0.55f, 1.0f); // blue = MBlock disarm (MB2)
-+		ring[3] = 0.4f + 0.6f * a;
-+	}
-+	else if (flash_perfect)
-+	{
-+		const float a = 1.0f - since_perfect / 350.0f;
-+		VectorSet(ring, 0.2f, 1.0f, 0.3f); // green = perfect block (MB2)
-+		ring[3] = 0.4f + 0.6f * a;
-+	}
-+	else if (flash_mbdef)
-+	{
-+		const float a = 1.0f - since_mbdef / 350.0f;
-+		VectorSet(ring, 1.0f, 0.85f, 0.1f); // yellow = MB defense (MB2)
-+		ring[3] = 0.4f + 0.6f * a;
-+	}
-+	for (int c = -1; c <= 1; c++)
-+	{
-+		for (int r = -1; r <= 1; r++)
++		vec4_t flash = { 0, 0, 0, 0 };
++		if (mb2_hud_disarm_time && since_disarm >= 0 && since_disarm < 450)
 +		{
-+			if (c || r)
-+			{
-+				MB2_WheelArc(cx, cy, c, r, radius, size, ring);
-+			}
++			MB2_SetColor(flash, 0.3f, 0.6f, 1.0f, 1.0f - since_disarm / 450.0f); // blue = disarm
++		}
++		else if (mb2_hud_perfect_time && since_perfect >= 0 && since_perfect < 300)
++		{
++			MB2_SetColor(flash, 0.6f, 1.0f, 0.6f, 1.0f - since_perfect / 300.0f); // bright green = perfect block
++		}
++		else if (mb2_hud_mbdef_time && since_mbdef >= 0 && since_mbdef < 300)
++		{
++			MB2_SetColor(flash, 1.0f, 0.85f, 0.1f, 1.0f - since_mbdef / 300.0f); // yellow = MB defense
++		}
++		if (flash[3] > 0.0f)
++		{
++			MB2_WheelArc(cx, cy, mb2_hud_last_zone.col, mb2_hud_last_zone.row, radius, thick * 1.4f, flash);
++			return;
 +		}
 +	}
++
++	// incoming swing direction
++	const gentity_t* enemy = MB2_HudEnemy(player);
 +	if (!enemy)
 +	{
 +		return;
 +	}
-+
-+	// incoming swing
 +	const int move = enemy->client->ps.saber_move;
-+	qboolean swing = qfalse;
-+	mb2Zone_t incoming = { 0, 0 };
-+	if (PM_SaberInStart(move) || PM_SaberInAttack(move) || PM_SaberInTransition(move))
++	if (!(PM_SaberInStart(move) || PM_SaberInAttack(move) || PM_SaberInTransition(move)))
 +	{
-+		incoming = MB2_IncomingZone(saber_moveData[move].startQuad);
-+		swing = incoming.col || incoming.row ? qtrue : qfalse;
++		return;
 +	}
-+
-+	// own block direction
-+	const qboolean holding_block = player->client->ps.ManualBlockingFlags & 1 << HOLDINGBLOCK ? qtrue : qfalse;
-+	mb2Zone_t aim = { 0, 0 };
-+	if (holding_block)
++	const mb2Zone_t incoming = MB2_IncomingZone(saber_moveData[move].startQuad);
++	if (!incoming.col && !incoming.row)
 +	{
-+		aim = mb2_input->integer ? MB2_KeyZone(player) : MB2_AimZone(player, enemy);
++		return;
 +	}
-+	const qboolean match = swing && holding_block && MB2_ZoneMatches(incoming, aim) ? qtrue : qfalse;
-+
-+	if (swing)
-+	{
-+		const float bright = PM_SaberInAttack(move) ? 1.0f : 0.6f;
-+		vec4_t red = { 1.0f, 0.15f, 0.1f, bright };
-+		if (match)
-+		{
-+			VectorSet(red, 0.2f, 1.0f, 0.3f);
-+		}
-+		MB2_WheelArc(cx, cy, incoming.col, incoming.row, radius + 2.5f, size * 1.6f, red);
-+	}
-+	if (holding_block && (aim.col || aim.row))
-+	{
-+		vec4_t white = { 1.0f, 1.0f, 1.0f, 0.85f };
-+		if (match)
-+		{
-+			VectorSet(white, 0.2f, 1.0f, 0.3f);
-+		}
-+		MB2_WheelArc(cx, cy, aim.col, aim.row, radius - 2.5f, size * 1.3f, white);
-+	}
++	mb2_hud_last_zone = incoming;
++	vec4_t green = { 0.25f, 1.0f, 0.35f, PM_SaberInAttack(move) ? 1.0f : 0.7f };
++	MB2_WheelArc(cx, cy, incoming.col, incoming.row, radius, thick, green);
 +}
 +
 +// ---------------------------------------------------------------------------
