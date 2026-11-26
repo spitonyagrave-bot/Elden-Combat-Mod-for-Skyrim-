@@ -1,8 +1,8 @@
 diff --git a/code/game/CMakeLists.txt b/code/game/CMakeLists.txt
-index 568b1a5..d8e7921 100644
+index dc9e68d..0f7889d 100644
 --- a/code/game/CMakeLists.txt
 +++ b/code/game/CMakeLists.txt
-@@ -135,6 +135,7 @@ set(SPGameGameFiles
+@@ -136,6 +136,7 @@ set(SPGameGameFiles
  	"${SPDir}/game/wp_rocket_launcher.cpp"
  	"${SPDir}/game/wp_saber.cpp"
  	"${SPDir}/game/wp_saberblocking.cpp"
@@ -11,10 +11,10 @@ index 568b1a5..d8e7921 100644
  	"${SPDir}/game/wp_stun_baton.cpp"
  	"${SPDir}/game/wp_thermal.cpp"
 diff --git a/code/game/wp_saber.cpp b/code/game/wp_saber.cpp
-index 6160d10..676dc58 100644
+index 528ea80..86b48b0 100644
 --- a/code/game/wp_saber.cpp
 +++ b/code/game/wp_saber.cpp
-@@ -259,6 +259,7 @@ extern qboolean jedi_win_po(const gentity_t* self);
+@@ -287,6 +287,7 @@ extern qboolean jedi_win_po(const gentity_t* self);
  void WP_BlockPointsDrain(const gentity_t* self, int fatigue);
  extern qboolean sab_beh_attack_vs_block(gentity_t* attacker, gentity_t* blocker, int saber_num, int blade_num, vec3_t hit_loc);
  extern qboolean sab_beh_block_vs_attack(gentity_t* blocker, gentity_t* attacker, int saber_num, int blade_num, vec3_t hit_loc);
@@ -22,7 +22,7 @@ index 6160d10..676dc58 100644
  extern void g_fatigue_bp_knockaway(gentity_t* blocker);
  void G_Beskar_Attack_Bounce(const gentity_t* self, gentity_t* other);
  extern qboolean Mandalorian_Character(const gentity_t* self);
-@@ -10040,11 +10041,14 @@ void wp_saber_damage_trace_amd(gentity_t* ent, int saber_num, int blade_num)
+@@ -10070,11 +10071,14 @@ static void wp_saber_damage_trace_amd(gentity_t* ent, int saber_num, int blade_n
  					//I'm attacking hit, they're parrying
  					if (saberHitFraction < 1.0f)
  					{
@@ -41,7 +41,7 @@ index 6160d10..676dc58 100644
  
  						collision_resolved = qtrue;
  					}
-@@ -11416,11 +11420,14 @@ static void WP_SaberDamageTrace_MD(gentity_t* ent, int saber_num, int blade_num)
+@@ -11446,11 +11450,14 @@ static void WP_SaberDamageTrace_MD(gentity_t* ent, int saber_num, int blade_num)
  					//I'm attacking hit, they're parrying
  					if (saberHitFraction < 1.0f)
  					{
@@ -62,10 +62,10 @@ index 6160d10..676dc58 100644
  					}
 diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
 new file mode 100644
-index 0000000..e900600
+index 0000000..c80546a
 --- /dev/null
 +++ b/code/game/wp_saber_mb2.cpp
-@@ -0,0 +1,515 @@
+@@ -0,0 +1,509 @@
 +/*
 +===========================================================================
 +MB2-style saber blocking layer for Movie Duels (SP).
@@ -75,7 +75,7 @@ index 0000000..e900600
 +(g_SerenityJediEngineMode 2) is on. It replaces the MD rule
 +"holding block always blocks in the right direction" with:
 +
-+  * Blocking only works against attacks from the front.
++  * Blocking works in all directions (like MB2), it only costs block points.
 +  * Perfect block (PB): the defender must AIM at the side the swing comes
 +    from (mouse aim, like Movie Battles II). A PB costs no block points,
 +    gives +8 BP and bounces the attacker.
@@ -497,14 +497,8 @@ index 0000000..e900600
 +		return qfalse; // player not blocking: MD rules (mishap, body hit)
 +	}
 +
-+	// 1. Only attacks from the front can be blocked.
-+	vec3_t blocker_yaw = { 0, blocker->client->ps.viewangles[YAW], 0 };
-+	if (!InFront(attacker->client->ps.origin, blocker->client->ps.origin, blocker_yaw, -0.1f))
-+	{
-+		MB2_HitThrough(blocker, attacker, saber_num, blade_num, hit_loc);
-+		MB2_Debug(blocker, attacker, "hit from the side/back, not blockable");
-+		return qtrue;
-+	}
++	// 1. Like MB2: blocking works all around (360 degrees). Only the disarm
++	//    (MBlock) needs the right direction.
 +
 +	const mb2Zone_t incoming = MB2_IncomingZone(saber_moveData[attacker->client->ps.saber_move].startQuad);
 +

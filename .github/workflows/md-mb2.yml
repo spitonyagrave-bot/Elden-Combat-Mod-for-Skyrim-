@@ -20,16 +20,25 @@ jobs:
         run: |
           git clone -c core.autocrlf=false https://github.com/MovieDuels/MovieDuels-SJE-SP-Rend2.git md
           cd md
-          git checkout 17d1c6523479ae6d44c93044e39061ce66d6b2b5
-          git apply --whitespace=nowarn ../movie-duels-mb2/mb2.patch
+          git checkout 7f102fc
 
       - name: Configure
         shell: bash
         run: cmake -S md -B mdbuild -G "Visual Studio 17 2022" -A x64 -DBuildSPEngine=OFF -DBuildSPRdVanilla=OFF -DBuildSPRend2=OFF
 
-      - name: Build game DLL
+      - name: Build unmodified game DLL (version check)
         shell: bash
-        run: cmake --build mdbuild --config Release --target MovieDuels-gamex86_64 --parallel
+        run: |
+          cmake --build mdbuild --config Release --target MovieDuels-gamex86_64 --parallel
+          mkdir -p check
+          cp "$(find mdbuild -name MovieDuels-gamex86_64.dll | head -1)" check/unmodified.dll
+
+      - name: Apply MB2 patch and build
+        shell: bash
+        run: |
+          cd md && git apply --whitespace=nowarn ../movie-duels-mb2/mb2.patch && cd ..
+          cmake -S md -B mdbuild -G "Visual Studio 17 2022" -A x64 -DBuildSPEngine=OFF -DBuildSPRdVanilla=OFF -DBuildSPRend2=OFF
+          cmake --build mdbuild --config Release --target MovieDuels-gamex86_64 --parallel
 
       - name: Store DLL in the branch
         shell: bash
@@ -40,6 +49,7 @@ jobs:
           cp "$f" movie-duels-mb2/build/
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
-          git add movie-duels-mb2/build/MovieDuels-gamex86_64.dll
+          cp check/unmodified.dll movie-duels-mb2/build/unmodified-check.dll
+          git add movie-duels-mb2/build/MovieDuels-gamex86_64.dll movie-duels-mb2/build/unmodified-check.dll
           git commit -m "Build MovieDuels-gamex86_64.dll [skip ci]"
           git push
