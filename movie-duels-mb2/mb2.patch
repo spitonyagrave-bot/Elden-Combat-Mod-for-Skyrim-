@@ -127,10 +127,10 @@ index 3bbd3f3..41557d0 100644
  					}
 diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
 new file mode 100644
-index 0000000..4ced26d
+index 0000000..9d88e7c
 --- /dev/null
 +++ b/code/game/wp_saber_mb2.cpp
-@@ -0,0 +1,822 @@
+@@ -0,0 +1,840 @@
 +/*
 +===========================================================================
 +MB2-style saber blocking layer for Movie Duels (SP).
@@ -444,6 +444,8 @@ index 0000000..4ced26d
 +static int mb2_hud_perfect_time; // player's last perfect block (wheel flashes green, like MB2)
 +static int mb2_hud_disarm_time;  // player's last MBlock disarm (wheel flashes blue, like MB2)
 +static int mb2_hud_mbdef_time;   // player's last MB defense: keys right, aim wrong (wheel flashes yellow)
++static int mb2_hud_hit_time;     // saber body hit by or on the player (ring flashes red, MB2 hit effect)
++static int mb2_hud_clash_time;   // saber hit saber, player involved (ring flashes yellow, MB2 hit effect)
 +
 +// Is the attacker inside the blocker's block arc (MB2: front only)?
 +static qboolean MB2_InBlockArc(const gentity_t* blocker, const gentity_t* attacker)
@@ -479,6 +481,10 @@ index 0000000..4ced26d
 +
 +static void MB2_MarkBlocked(gentity_t* blocker, gentity_t* attacker, const int saber_num, const int blade_num)
 +{
++	if (MB2_IsPlayer(blocker) || MB2_IsPlayer(attacker))
++	{
++		mb2_hud_clash_time = level.time;
++	}
 +	blocker->client->ps.saberEventFlags |= SEF_PARRIED;
 +	attacker->client->ps.saberEventFlags |= SEF_BLOCKED;
 +	wp_saber_clear_damage_for_ent_num(attacker, blocker->s.number, saber_num, blade_num);
@@ -834,7 +840,7 @@ index 0000000..4ced26d
 +	const float width = 3.2f;
 +
 +	// dark ring
-+	vec4_t dark = { 0.0f, 0.0f, 0.0f, 0.45f };
++	vec4_t dark = { 0.0f, 0.0f, 0.0f, 0.3f };
 +	MB2_Arc(cx, cy, 0.0f, 2.0f * M_PI, radius, width, dark);
 +
 +	// flash after a block result (MB2 colours)
@@ -853,6 +859,14 @@ index 0000000..4ced26d
 +	else if (mb2_hud_mbdef_time && since_mbdef >= 0 && since_mbdef < 300)
 +	{
 +		MB2_SetColor(flash, 1.0f, 0.85f, 0.1f, 1.0f - since_mbdef / 300.0f); // yellow = MB defense
++	}
++	else if (mb2_hud_hit_time && level.time - mb2_hud_hit_time >= 0 && level.time - mb2_hud_hit_time < 350)
++	{
++		MB2_SetColor(flash, 1.0f, 0.1f, 0.1f, 1.0f - (level.time - mb2_hud_hit_time) / 350.0f); // red = body hit
++	}
++	else if (mb2_hud_clash_time && level.time - mb2_hud_clash_time >= 0 && level.time - mb2_hud_clash_time < 250)
++	{
++		MB2_SetColor(flash, 1.0f, 0.9f, 0.2f, 1.0f - (level.time - mb2_hud_clash_time) / 250.0f); // yellow = saber on saber
 +	}
 +	if (flash[3] > 0.0f)
 +	{
@@ -929,6 +943,10 @@ index 0000000..4ced26d
 +	if (!attacker || !attacker->client || !victim || !victim->client || victim->health <= 0 || damage <= 0)
 +	{
 +		return damage;
++	}
++	if ((MB2_IsPlayer(attacker) || MB2_IsPlayer(victim)) && !(*d_flags & DAMAGE_NO_DAMAGE))
++	{
++		mb2_hud_hit_time = level.time;
 +	}
 +	if (*d_flags & DAMAGE_NO_DAMAGE)
 +	{
