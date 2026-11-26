@@ -103,10 +103,10 @@ index 3bbd3f3..41557d0 100644
  					}
 diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
 new file mode 100644
-index 0000000..9d17fbe
+index 0000000..0c2544f
 --- /dev/null
 +++ b/code/game/wp_saber_mb2.cpp
-@@ -0,0 +1,754 @@
+@@ -0,0 +1,795 @@
 +/*
 +===========================================================================
 +MB2-style saber blocking layer for Movie Duels (SP).
@@ -177,6 +177,7 @@ index 0000000..9d17fbe
 +static cvar_t* mb2_debug;       // 1 = print what happened on each block
 +static cvar_t* mb2_one_hit;     // 1 = a saber hit that is not blocked kills (MB2)
 +static cvar_t* mb2_no_auto_parry; // 1 = no automatic parry for the player when not holding block
++static cvar_t* mb2_block_arc;   // width of the block in degrees in front of you (360 = all around)
 +
 +static void MB2_RegisterCvars()
 +{
@@ -193,6 +194,7 @@ index 0000000..9d17fbe
 +	mb2_debug = gi.cvar("g_MB2Debug", "0", CVAR_ARCHIVE);
 +	mb2_one_hit = gi.cvar("g_MB2OneHitKill", "1", CVAR_ARCHIVE);
 +	mb2_no_auto_parry = gi.cvar("g_MB2NoAutoParry", "1", CVAR_ARCHIVE);
++	mb2_block_arc = gi.cvar("g_MB2BlockArc", "150", CVAR_ARCHIVE);
 +}
 +
 +// ---------------------------------------------------------------------------
@@ -290,51 +292,48 @@ index 0000000..9d17fbe
 +// Block point cost of a normal (not perfect) block, MB2 style:
 +// heavier styles drain more, and the state of both fighters scales it.
 +// ---------------------------------------------------------------------------
-+static int MB2_StyleCost(const int style)
++// MB2 (Release 21) style ratings: offense AP / defense DP.
++// Movie Duels style -> MB2 style: fast=Blue, Tavion=Cyan, medium=Yellow,
++// staff=Staff, dual=Duals, Desann=Purple, strong=Red.
++static void MB2_StyleRating(const int style, float* ap, float* dp)
 +{
 +	switch (style)
 +	{
-+	case SS_FAST: return 5;
-+	case SS_TAVION: return 7;
-+	case SS_STAFF: return 7;
-+	case SS_DUAL: return 8;
-+	case SS_MEDIUM: return 9;
-+	case SS_STRONG: return 13;
-+	case SS_DESANN: return 14;
-+	default: return 9;
++	case SS_FAST: *ap = 7; *dp = 55; return;
++	case SS_TAVION: *ap = 8; *dp = 48; return;
++	case SS_STAFF: *ap = 8; *dp = 53; return;
++	case SS_DUAL: *ap = 8; *dp = 50; return;
++	case SS_DESANN: *ap = 11; *dp = 48; return;
++	case SS_STRONG: *ap = 12; *dp = 48; return;
++	case SS_MEDIUM:
++	default: *ap = 9; *dp = 50; return;
 +	}
 +}
 +
++// BP drain of a blocked swing: 100 * attacker AP / defender DP (MB2 R21),
++// half for follow-up swings of a combo, plus the R21 state multipliers.
 +static int MB2_BlockCost(const gentity_t* blocker, const gentity_t* attacker)
 +{
-+	float cost = MB2_StyleCost(attacker->client->ps.saberAnimLevel);
++	float ap, dp, unused;
++	MB2_StyleRating(attacker->client->ps.saberAnimLevel, &ap, &unused);
++	MB2_StyleRating(blocker->client->ps.saberAnimLevel, &unused, &dp);
++	float cost = 100.0f * ap / dp;
 +
-+	// attacker state
-+	if (attacker->client->ps.groundEntityNum == ENTITYNUM_NONE)
++	if (attacker->client->ps.saberAttackChainCount > 1)
 +	{
-+		cost *= 1.2f; // jump attack
++		cost *= 0.5f; // later swings of a combo drain half
 +	}
-+	else if (attacker->client->ps.pm_flags & PMF_DUCKED)
++	if (attacker->client->ps.pm_flags & PMF_DUCKED)
 +	{
-+		cost *= 0.67f; // crouch attack
-+	}
-+	else if (VectorLengthSquared(attacker->client->ps.velocity) > 200.0f * 200.0f)
-+	{
-+		cost *= 0.8f; // running attack
-+	}
-+
-+	// blocker state
-+	if (blocker->client->ps.ManualBlockingFlags & 1 << HOLDINGBLOCKANDATTACK)
-+	{
-+		cost *= 1.2f; // blocking while trying to attack
++		cost *= 0.75f; // crouch attack
 +	}
 +	if (blocker->client->ps.pm_flags & PMF_DUCKED)
 +	{
-+		cost *= 1.5f;
++		cost *= 1.25f; // crouched defender
 +	}
-+	else if (blocker->client->ps.groundEntityNum == ENTITYNUM_NONE)
++	if (blocker->client->ps.ManualBlockingFlags & 1 << HOLDINGBLOCKANDATTACK)
 +	{
-+		cost *= 1.3f;
++		cost *= 1.2f; // caught mid-swing
 +	}
 +
 +	const int result = static_cast<int>(cost + 0.5f);
@@ -418,8 +417,24 @@ index 0000000..9d17fbe
 +// Cooldowns per entity (MBlock attempt, NPC disarm)
 +// ---------------------------------------------------------------------------
 +static int mb2_mblock_ready[MAX_GENTITIES];
-+static int mb2_hud_perfect_time; // level.time of the player's last perfect block (wheel flashes blue)
-+static int mb2_hud_disarm_time;  // level.time of the player's last MBlock disarm (wheel flashes gold)
++static int mb2_hud_perfect_time; // player's last perfect block (wheel flashes green, like MB2)
++static int mb2_hud_disarm_time;  // player's last MBlock disarm (wheel flashes blue, like MB2)
++static int mb2_hud_mbdef_time;   // player's last MB defense: keys right, aim wrong (wheel flashes yellow)
++
++// Is the attacker inside the blocker's block arc (MB2: front only)?
++static qboolean MB2_InBlockArc(const gentity_t* blocker, const gentity_t* attacker)
++{
++	const float arc = mb2_block_arc->value;
++	if (arc >= 360.0f)
++	{
++		return qtrue;
++	}
++	vec3_t dir, ang;
++	VectorSubtract(attacker->client->ps.origin, blocker->client->ps.origin, dir);
++	vectoangles(dir, ang);
++	const float d_yaw = fabs(AngleSubtract(blocker->client->ps.viewangles[YAW], ang[YAW]));
++	return d_yaw <= arc * 0.5f ? qtrue : qfalse;
++}
 +static int mb2_npc_disarm_ready[MAX_GENTITIES];
 +
 +static qboolean MB2_IsPlayer(const gentity_t* ent)
@@ -460,7 +475,7 @@ index 0000000..9d17fbe
 +{
 +	WP_SaberMBlock(blocker, attacker, saber_num, blade_num, hit_loc);
 +	SabBeh_AnimateSlowBounce(attacker);
-+	wp_block_points_regenerate_over_ride(blocker, 8);
++	wp_block_points_regenerate_over_ride(blocker, 2); // MB2 R21: +2 BP
 +	blocker->client->ps.saberFatigueChainCount = MISHAPLEVEL_NONE;
 +	blocker->client->ps.userInt3 |= 1 << FLAG_PERFECTBLOCK;
 +
@@ -473,28 +488,22 @@ index 0000000..9d17fbe
 +	MB2_MarkBlocked(blocker, attacker, saber_num, blade_num);
 +}
 +
-+// Normal block, or a broken block when the block points run out.
-+static void MB2_NormalBlock(gentity_t* blocker, gentity_t* attacker, vec3_t hit_loc, const int saber_num, const int blade_num)
++// Normal block. Returns qfalse when the block points run out: then the
++// guard is broken and the swing goes through to the body (MB2).
++static qboolean MB2_NormalBlock(gentity_t* blocker, gentity_t* attacker, vec3_t hit_loc, const int saber_num, const int blade_num, const float cost_mult = 1.0f)
 +{
-+	const int cost = MB2_BlockCost(blocker, attacker);
++	int cost = static_cast<int>(MB2_BlockCost(blocker, attacker) * cost_mult + 0.5f);
++	if (cost < 1)
++	{
++		cost = 1;
++	}
 +
 +	if (blocker->client->ps.blockPoints <= cost)
 +	{
-+		// out of block points: the guard breaks
++		// out of block points: the guard breaks and the hit connects
 +		blocker->client->ps.blockPoints = 0;
-+		G_Stagger(blocker);
-+		const int disarm_chance = MB2_IsPlayer(blocker) ? 50 : 35;
-+		if (Q_irand(0, 99) < disarm_chance)
-+		{
-+			SabBeh_SaberShouldBeDisarmedBlocker(blocker, saber_num);
-+			MB2_Debug(blocker, attacker, "guard broken, saber lost");
-+		}
-+		else
-+		{
-+			MB2_Debug(blocker, attacker, "guard broken, stagger");
-+		}
-+		MB2_MarkBlocked(blocker, attacker, saber_num, blade_num);
-+		return;
++		MB2_Debug(blocker, attacker, "out of block points - guard broken");
++		return qfalse;
 +	}
 +
 +	PM_AddBlockFatigue(&blocker->client->ps, cost);
@@ -512,6 +521,15 @@ index 0000000..9d17fbe
 +	}
 +	MB2_MarkBlocked(blocker, attacker, saber_num, blade_num);
 +	MB2_Debug(blocker, attacker, va("normal block, cost %d", cost));
++	return qtrue;
++}
++
++// Guard broken (no block points): no parry at all, the swing goes on and the
++// body hit kills (see MB2_BodyHitDamage).
++static qboolean MB2_GuardBroken(gentity_t* blocker)
++{
++	blocker->client->ps.blockPoints = 0;
++	return qtrue;
 +}
 +
 +// ---------------------------------------------------------------------------
@@ -556,8 +574,13 @@ index 0000000..9d17fbe
 +		return qfalse; // old MD rules (automatic parry)
 +	}
 +
-+	// 1. Like MB2: blocking works all around (360 degrees). Only the disarm
-+	//    (MBlock) needs the right direction.
++	// 1. Like MB2: the block only covers the front (g_MB2BlockArc). Hits from
++	//    behind or the side go through.
++	if (!MB2_InBlockArc(blocker, attacker))
++	{
++		MB2_Debug(blocker, attacker, "hit from behind/side - block bypassed");
++		return qtrue;
++	}
 +
 +	const mb2Zone_t incoming = MB2_IncomingZone(saber_moveData[attacker->client->ps.saber_move].startQuad);
 +
@@ -577,7 +600,7 @@ index 0000000..9d17fbe
 +
 +			if (perfect && keys_ok)
 +			{
-+				mb2_mblock_ready[blocker->s.number] = level.time + 1500;
++				mb2_mblock_ready[blocker->s.number] = level.time + 200; // MB2 R20+: 200 ms
 +				MB2_PerfectBlockEffects(blocker, attacker, hit_loc, saber_num, blade_num);
 +				sab_beh_saber_should_be_disarmed_attacker(attacker, saber_num);
 +				mb2_hud_disarm_time = level.time;
@@ -588,10 +611,15 @@ index 0000000..9d17fbe
 +				MB2_Debug(blocker, attacker, "MBLOCK - attacker disarmed");
 +				return qtrue;
 +			}
-+			// failed MBlock: short cooldown and a block point penalty
-+			mb2_mblock_ready[blocker->s.number] = level.time + 1000;
-+			PM_AddBlockFatigue(&blocker->client->ps, 10);
-+			MB2_Debug(blocker, attacker, "MBlock failed (-10 BP)");
++			mb2_mblock_ready[blocker->s.number] = level.time + 200;
++			if (keys_ok && !perfect)
++			{
++				// MB defense: timing and keys right, aim wrong -> half block cost (MB2, yellow)
++				mb2_hud_mbdef_time = level.time;
++				MB2_Debug(blocker, attacker, "MB defense (half cost)");
++				return MB2_NormalBlock(blocker, attacker, hit_loc, saber_num, blade_num, 0.5f) ? qtrue : MB2_GuardBroken(blocker);
++			}
++			// failed MBlock: no penalty since MB2 R21
 +		}
 +
 +		if (perfect)
@@ -599,9 +627,9 @@ index 0000000..9d17fbe
 +			MB2_PerfectBlockEffects(blocker, attacker, hit_loc, saber_num, blade_num);
 +			MB2_Debug(blocker, attacker, "PERFECT BLOCK");
 +		}
-+		else
++		else if (!MB2_NormalBlock(blocker, attacker, hit_loc, saber_num, blade_num))
 +		{
-+			MB2_NormalBlock(blocker, attacker, hit_loc, saber_num, blade_num);
++			return MB2_GuardBroken(blocker);
 +		}
 +		return qtrue;
 +	}
@@ -632,7 +660,10 @@ index 0000000..9d17fbe
 +		return qtrue;
 +	}
 +
-+	MB2_NormalBlock(blocker, attacker, hit_loc, saber_num, blade_num);
++	if (!MB2_NormalBlock(blocker, attacker, hit_loc, saber_num, blade_num))
++	{
++		return MB2_GuardBroken(blocker);
++	}
 +	return qtrue;
 +}
 +
@@ -642,7 +673,7 @@ index 0000000..9d17fbe
 +//   red        = where the enemy's swing comes from (bright when it lands)
 +//   white      = your block direction (aim), only while holding block
 +//   green      = your aim matches the swing: perfect block ready
-+//   blue flash = perfect block, gold flash = disarm (MBlock)
++//   green flash = perfect block, blue = disarm (MBlock), yellow = MB defense (like MB2)
 +// g_MB2Wheel 0 hides it, g_MB2WheelSize sets the radius.
 +// ---------------------------------------------------------------------------
 +static cvar_t* mb2_wheel;
@@ -724,7 +755,9 @@ index 0000000..9d17fbe
 +	const int since_disarm = level.time - mb2_hud_disarm_time;
 +	const qboolean flash_perfect = mb2_hud_perfect_time && since_perfect >= 0 && since_perfect < 350 ? qtrue : qfalse;
 +	const qboolean flash_disarm = mb2_hud_disarm_time && since_disarm >= 0 && since_disarm < 500 ? qtrue : qfalse;
-+	if (!enemy && !flash_perfect && !flash_disarm)
++	const int since_mbdef = level.time - mb2_hud_mbdef_time;
++	const qboolean flash_mbdef = mb2_hud_mbdef_time && since_mbdef >= 0 && since_mbdef < 350 ? qtrue : qfalse;
++	if (!enemy && !flash_perfect && !flash_disarm && !flash_mbdef)
 +	{
 +		return;
 +	}
@@ -739,13 +772,19 @@ index 0000000..9d17fbe
 +	if (flash_disarm)
 +	{
 +		const float a = 1.0f - since_disarm / 500.0f;
-+		VectorSet(ring, 1.0f, 0.8f, 0.2f);
++		VectorSet(ring, 0.25f, 0.55f, 1.0f); // blue = MBlock disarm (MB2)
 +		ring[3] = 0.4f + 0.6f * a;
 +	}
 +	else if (flash_perfect)
 +	{
 +		const float a = 1.0f - since_perfect / 350.0f;
-+		VectorSet(ring, 0.25f, 0.55f, 1.0f);
++		VectorSet(ring, 0.2f, 1.0f, 0.3f); // green = perfect block (MB2)
++		ring[3] = 0.4f + 0.6f * a;
++	}
++	else if (flash_mbdef)
++	{
++		const float a = 1.0f - since_mbdef / 350.0f;
++		VectorSet(ring, 1.0f, 0.85f, 0.1f); // yellow = MB defense (MB2)
 +		ring[3] = 0.4f + 0.6f * a;
 +	}
 +	for (int c = -1; c <= 1; c++)
@@ -849,9 +888,11 @@ index 0000000..9d17fbe
 +	{
 +		return damage; // not a real swing
 +	}
-+	if (victim->client->ps.ManualBlockingFlags & (1 << HOLDINGBLOCK | 1 << MBF_NPCBLOCKING))
++	if (victim->client->ps.ManualBlockingFlags & (1 << HOLDINGBLOCK | 1 << MBF_NPCBLOCKING)
++		&& victim->client->ps.blockPoints > 0
++		&& MB2_InBlockArc(victim, attacker))
 +	{
-+		return damage; // was holding block: the normal MD damage applies, never a one-hit kill
++		return damage; // blocking from the front with block points left: normal MD damage
 +	}
 +	*d_flags &= ~DAMAGE_NO_KILL;
 +	const int lethal = victim->health + victim->client->ps.stats[STAT_ARMOR] + 10;
