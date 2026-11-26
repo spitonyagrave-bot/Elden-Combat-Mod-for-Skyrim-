@@ -11,7 +11,7 @@ index dc9e68d..0f7889d 100644
  	"${SPDir}/game/wp_stun_baton.cpp"
  	"${SPDir}/game/wp_thermal.cpp"
 diff --git a/code/game/wp_saber.cpp b/code/game/wp_saber.cpp
-index 528ea80..86b48b0 100644
+index 3bbd3f3..9707da3 100644
 --- a/code/game/wp_saber.cpp
 +++ b/code/game/wp_saber.cpp
 @@ -287,6 +287,7 @@ extern qboolean jedi_win_po(const gentity_t* self);

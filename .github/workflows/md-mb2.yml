@@ -20,7 +20,7 @@ jobs:
         run: |
           git clone -c core.autocrlf=false https://github.com/MovieDuels/MovieDuels-SJE-SP-Rend2.git md
           cd md
-          git checkout 7f102fc
+          git checkout 9091577
 
       - name: Configure
         shell: bash
