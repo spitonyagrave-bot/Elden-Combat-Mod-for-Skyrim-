@@ -1,0 +1,45 @@
+name: Movie Duels MB2 build
+
+on:
+  push:
+    branches: [ "claude/project-thread-ozla21" ]
+    paths: [ "movie-duels-mb2/**", ".github/workflows/md-mb2.yml" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get Movie Duels source (Update 7)
+        shell: bash
+        run: |
+          git clone https://github.com/MovieDuels/MovieDuels-SJE-SP-Rend2.git md
+          cd md
+          git checkout 17d1c650
+          git apply --whitespace=nowarn ../movie-duels-mb2/mb2.patch
+
+      - name: Configure
+        shell: bash
+        run: cmake -S md -B mdbuild -G "Visual Studio 17 2022" -A x64 -DBuildSPEngine=OFF -DBuildSPRdVanilla=OFF -DBuildSPRend2=OFF
+
+      - name: Build game DLL
+        shell: bash
+        run: cmake --build mdbuild --config Release --target MovieDuels-gamex86_64 -- /m
+
+      - name: Store DLL in the branch
+        shell: bash
+        run: |
+          mkdir -p movie-duels-mb2/build
+          f=$(find mdbuild -name "MovieDuels-gamex86_64.dll" | head -1)
+          echo "built: $f"
+          cp "$f" movie-duels-mb2/build/
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add movie-duels-mb2/build/MovieDuels-gamex86_64.dll
+          git commit -m "Build MovieDuels-gamex86_64.dll [skip ci]"
+          git push

@@ -1,0 +1,579 @@
+diff --git a/code/game/CMakeLists.txt b/code/game/CMakeLists.txt
+index 568b1a5..d8e7921 100644
+--- a/code/game/CMakeLists.txt
++++ b/code/game/CMakeLists.txt
+@@ -135,6 +135,7 @@ set(SPGameGameFiles
+ 	"${SPDir}/game/wp_rocket_launcher.cpp"
+ 	"${SPDir}/game/wp_saber.cpp"
+ 	"${SPDir}/game/wp_saberblocking.cpp"
++	"${SPDir}/game/wp_saber_mb2.cpp"
+ 	"${SPDir}/game/wp_saberLoad.cpp"
+ 	"${SPDir}/game/wp_stun_baton.cpp"
+ 	"${SPDir}/game/wp_thermal.cpp"
+diff --git a/code/game/wp_saber.cpp b/code/game/wp_saber.cpp
+index 6160d10..676dc58 100644
+--- a/code/game/wp_saber.cpp
++++ b/code/game/wp_saber.cpp
+@@ -259,6 +259,7 @@ extern qboolean jedi_win_po(const gentity_t* self);
+ void WP_BlockPointsDrain(const gentity_t* self, int fatigue);
+ extern qboolean sab_beh_attack_vs_block(gentity_t* attacker, gentity_t* blocker, int saber_num, int blade_num, vec3_t hit_loc);
+ extern qboolean sab_beh_block_vs_attack(gentity_t* blocker, gentity_t* attacker, int saber_num, int blade_num, vec3_t hit_loc);
++extern qboolean MB2_ResolveBlock(gentity_t* blocker, gentity_t* attacker, int saber_num, int blade_num, vec3_t hit_loc);
+ extern void g_fatigue_bp_knockaway(gentity_t* blocker);
+ void G_Beskar_Attack_Bounce(const gentity_t* self, gentity_t* other);
+ extern qboolean Mandalorian_Character(const gentity_t* self);
+@@ -10040,11 +10041,14 @@ void wp_saber_damage_trace_amd(gentity_t* ent, int saber_num, int blade_num)
+ 					//I'm attacking hit, they're parrying
+ 					if (saberHitFraction < 1.0f)
+ 					{
+-						//make me parry	-(Im the blocker)
+-						sab_beh_block_vs_attack(hit_owner, ent, saber_num, blade_num, saberHitLocation);
++						if (!MB2_ResolveBlock(hit_owner, ent, saber_num, blade_num, saberHitLocation))
++						{
++							//make me parry	-(Im the blocker)
++							sab_beh_block_vs_attack(hit_owner, ent, saber_num, blade_num, saberHitLocation);
+ 
+-						//make me bounce -(Im the attacker)
+-						sab_beh_attack_vs_block(ent, hit_owner, saber_num, blade_num, saberHitLocation);
++							//make me bounce -(Im the attacker)
++							sab_beh_attack_vs_block(ent, hit_owner, saber_num, blade_num, saberHitLocation);
++						}
+ 
+ 						collision_resolved = qtrue;
+ 					}
+@@ -11416,11 +11420,14 @@ static void WP_SaberDamageTrace_MD(gentity_t* ent, int saber_num, int blade_num)
+ 					//I'm attacking hit, they're parrying
+ 					if (saberHitFraction < 1.0f)
+ 					{
+-						//make me parry	-(Im the blocker)
+-						sab_beh_block_vs_attack(hit_owner, ent, saber_num, blade_num, saberHitLocation);
++						if (!MB2_ResolveBlock(hit_owner, ent, saber_num, blade_num, saberHitLocation))
++						{
++							//make me parry	-(Im the blocker)
++							sab_beh_block_vs_attack(hit_owner, ent, saber_num, blade_num, saberHitLocation);
+ 
+-						//make me bounce -(Im the attacker)
+-						sab_beh_attack_vs_block(ent, hit_owner, saber_num, blade_num, saberHitLocation);
++							//make me bounce -(Im the attacker)
++							sab_beh_attack_vs_block(ent, hit_owner, saber_num, blade_num, saberHitLocation);
++						}
+ 
+ 						collision_resolved = qtrue;
+ 					}
+diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
+new file mode 100644
+index 0000000..7fdbc8d
+--- /dev/null
++++ b/code/game/wp_saber_mb2.cpp
+@@ -0,0 +1,511 @@
++/*
++===========================================================================
++MB2-style saber blocking layer for Movie Duels (SP).
++Licensed under the GPL v2 like the rest of this code base.
++
++Active when g_MB2Combat is 1 and the Advanced MD combat mode
++(g_SerenityJediEngineMode 2) is on. It replaces the MD rule
++"holding block always blocks in the right direction" with:
++
++  * Blocking only works against attacks from the front.
++  * Perfect block (PB): the defender must AIM at the side the swing comes
++    from (mouse aim, like Movie Battles II). A PB costs no block points,
++    gives +8 BP and bounces the attacker.
++  * A normal block (aim wrong) costs block points, based on the attacker's
++    saber style and both fighters' state.
++  * Out of block points: the block breaks (stagger), and the defender can
++    lose the saber.
++  * MBlock / disarm: hold block, tap attack right before the hit, hold the
++    mirrored direction key (W and S swapped) and aim correctly: the attacker
++    loses the saber.
++  * NPCs use the same rules. Their "aim" is a reaction time: they can only
++    perfect block a swing they had time to see, so fast chains and
++    half-swings get through more often. Difficulty and NPC rank set the
++    reaction time and accuracy.
++===========================================================================
++*/
++
++#include "g_local.h"
++#include "anims.h"
++#include "b_local.h"
++#include "wp_saber.h"
++#include "../cgame/cg_local.h"
++
++extern qboolean G_ControlledByPlayer(const gentity_t* self);
++extern qboolean InFront(vec3_t spot, vec3_t from, vec3_t fromAngles, float threshHold);
++extern int PM_AnimLength(int index, animNumber_t anim);
++extern void PM_AddBlockFatigue(playerState_t* ps, int fatigue);
++extern void wp_block_points_regenerate_over_ride(const gentity_t* self, int override_amt);
++extern void wp_saber_clear_damage_for_ent_num(gentity_t* attacker, int entityNum, int saber_num, int blade_num);
++extern qboolean WP_SaberMBlock(gentity_t* victim, gentity_t* attacker, int saber_num, int blade_num, vec3_t hit_loc);
++extern qboolean WP_SaberParry(gentity_t* victim, gentity_t* attacker, int saber_num, int blade_num);
++extern qboolean WP_SaberFatiguedParry(gentity_t* victim, gentity_t* attacker, int saber_num, int blade_num, vec3_t hit_loc);
++extern void SabBeh_AnimateSlowBounce(gentity_t* self);
++extern void G_Stagger(gentity_t* hit_ent);
++extern void SabBeh_SaberShouldBeDisarmedBlocker(gentity_t* blocker, int saber_num);
++extern void sab_beh_saber_should_be_disarmed_attacker(gentity_t* attacker, int saber_num);
++extern qboolean pm_saber_innonblockable_attack(int anim);
++extern qboolean PM_SaberInParry(int move);
++extern void CGCam_BlockShakeSP(float intensity, int duration);
++extern void G_StartStasisEffect_FORCE_LEVEL_1(const gentity_t* ent, int me_flags, int length, float time_scale, int spin_time);
++extern cvar_t* g_SerenityJediEngineMode;
++extern cvar_t* d_slowmoaction;
++extern cvar_t* d_blockinfo;
++
++// ---------------------------------------------------------------------------
++// Settings (console variables, saved in the config)
++// ---------------------------------------------------------------------------
++static cvar_t* mb2_on;          // 1 = MB2 blocking on
++static cvar_t* mb2_input;       // 0 = aim with the mouse (MB2), 1 = movement keys (controller)
++static cvar_t* mb2_aim_yaw;     // degrees left/right of the enemy that count as "left/right"
++static cvar_t* mb2_aim_pitch;   // degrees above/below the enemy that count as "high/low"
++static cvar_t* mb2_npc_react;   // NPC reaction time in percent (100 = default)
++static cvar_t* mb2_back_damage; // damage of a hit that could not be blocked (from behind)
++static cvar_t* mb2_debug;       // 1 = print what happened on each block
++
++static void MB2_RegisterCvars()
++{
++	if (mb2_on)
++	{
++		return;
++	}
++	mb2_on = gi.cvar("g_MB2Combat", "1", CVAR_ARCHIVE);
++	mb2_input = gi.cvar("g_MB2BlockInput", "0", CVAR_ARCHIVE);
++	mb2_aim_yaw = gi.cvar("g_MB2AimYaw", "9", CVAR_ARCHIVE);
++	mb2_aim_pitch = gi.cvar("g_MB2AimPitch", "7", CVAR_ARCHIVE);
++	mb2_npc_react = gi.cvar("g_MB2NPCReaction", "100", CVAR_ARCHIVE);
++	mb2_back_damage = gi.cvar("g_MB2BackHitDamage", "30", CVAR_ARCHIVE);
++	mb2_debug = gi.cvar("g_MB2Debug", "0", CVAR_ARCHIVE);
++}
++
++// ---------------------------------------------------------------------------
++// Zones on a 3x3 grid as seen by the defender: column -1 left, 0 middle,
++// 1 right; row 1 high, 0 middle, -1 low.
++// ---------------------------------------------------------------------------
++struct mb2Zone_t
++{
++	int col;
++	int row;
++};
++
++// Where the swing comes from, seen by the DEFENDER. The attacker's right is
++// the defender's left, so the side is mirrored.
++static mb2Zone_t MB2_IncomingZone(const int start_quad)
++{
++	switch (start_quad)
++	{
++	case Q_TR: return { -1, 1 };
++	case Q_T: return { 0, 1 };
++	case Q_TL: return { 1, 1 };
++	case Q_R: return { -1, 0 };
++	case Q_L: return { 1, 0 };
++	case Q_BR: return { -1, -1 };
++	case Q_B: return { 0, -1 };
++	case Q_BL: return { 1, -1 };
++	default: return { 0, 0 };
++	}
++}
++
++static int MB2_Sign(const float v, const float dead)
++{
++	if (v > dead) return 1;
++	if (v < -dead) return -1;
++	return 0;
++}
++
++// The defender's aim relative to the attacker's body.
++static mb2Zone_t MB2_AimZone(const gentity_t* blocker, const gentity_t* attacker)
++{
++	vec3_t from, to, dir, ang;
++	VectorCopy(blocker->client->ps.origin, from);
++	from[2] += blocker->client->ps.viewheight;
++	VectorCopy(attacker->client->ps.origin, to);
++	to[2] += attacker->client->ps.viewheight * 0.75f; // chest height
++	VectorSubtract(to, from, dir);
++	vectoangles(dir, ang);
++
++	// positive yaw difference = looking to the left of the attacker
++	const float d_yaw = AngleSubtract(blocker->client->ps.viewangles[YAW], ang[YAW]);
++	// negative pitch difference = looking above the attacker
++	const float d_pitch = AngleSubtract(blocker->client->ps.viewangles[PITCH], ang[PITCH]);
++
++	mb2Zone_t z;
++	z.col = -MB2_Sign(d_yaw, mb2_aim_yaw->value);
++	z.row = -MB2_Sign(d_pitch, mb2_aim_pitch->value);
++	return z;
++}
++
++// Movement keys as a zone (controller option, and the MBlock key check).
++static mb2Zone_t MB2_KeyZone(const gentity_t* ent)
++{
++	mb2Zone_t z;
++	z.col = MB2_Sign(ent->client->pers.cmd.rightmove, 0);
++	z.row = MB2_Sign(ent->client->pers.cmd.forwardmove, 0);
++	return z;
++}
++
++// How close the aim must be: hard = exact zone, normal = exact or one step
++// up/down/left/right, easy = any neighbour (diagonals too).
++static qboolean MB2_ZoneMatches(const mb2Zone_t& want, const mb2Zone_t& have)
++{
++	const int dc = abs(want.col - have.col);
++	const int dr = abs(want.row - have.row);
++	if (dc == 0 && dr == 0)
++	{
++		return qtrue;
++	}
++	if (g_spskill->integer <= 0)
++	{
++		return dc <= 1 && dr <= 1 ? qtrue : qfalse;
++	}
++	if (g_spskill->integer == 1)
++	{
++		return dc + dr <= 1 ? qtrue : qfalse;
++	}
++	return qfalse;
++}
++
++// ---------------------------------------------------------------------------
++// Block point cost of a normal (not perfect) block, MB2 style:
++// heavier styles drain more, and the state of both fighters scales it.
++// ---------------------------------------------------------------------------
++static int MB2_StyleCost(const int style)
++{
++	switch (style)
++	{
++	case SS_FAST: return 5;
++	case SS_TAVION: return 7;
++	case SS_STAFF: return 7;
++	case SS_DUAL: return 8;
++	case SS_MEDIUM: return 9;
++	case SS_STRONG: return 13;
++	case SS_DESANN: return 14;
++	default: return 9;
++	}
++}
++
++static int MB2_BlockCost(const gentity_t* blocker, const gentity_t* attacker)
++{
++	float cost = MB2_StyleCost(attacker->client->ps.saber_anim_level);
++
++	// attacker state
++	if (attacker->client->ps.groundEntityNum == ENTITYNUM_NONE)
++	{
++		cost *= 1.2f; // jump attack
++	}
++	else if (attacker->client->ps.pm_flags & PMF_DUCKED)
++	{
++		cost *= 0.67f; // crouch attack
++	}
++	else if (VectorLengthSquared(attacker->client->ps.velocity) > 200.0f * 200.0f)
++	{
++		cost *= 0.8f; // running attack
++	}
++
++	// blocker state
++	if (blocker->client->ps.ManualBlockingFlags & 1 << HOLDINGBLOCKANDATTACK)
++	{
++		cost *= 1.2f; // blocking while trying to attack
++	}
++	if (blocker->client->ps.pm_flags & PMF_DUCKED)
++	{
++		cost *= 1.5f;
++	}
++	else if (blocker->client->ps.groundEntityNum == ENTITYNUM_NONE)
++	{
++		cost *= 1.3f;
++	}
++
++	const int result = static_cast<int>(cost + 0.5f);
++	return result < 1 ? 1 : result;
++}
++
++// ---------------------------------------------------------------------------
++// NPC "aim": a reaction time. The NPC can perfect block a swing only once
++// it had time to see where it comes from.
++// ---------------------------------------------------------------------------
++static int MB2_NPCReactionMs(const gentity_t* npc)
++{
++	int react;
++	switch (g_spskill->integer)
++	{
++	case 0: react = 460; break;
++	case 1: react = 330; break;
++	default: react = 230; break;
++	}
++	if (npc->NPC)
++	{
++		if (npc->NPC->rank >= RANK_CAPTAIN)
++		{
++			react -= 90; // bosses / masters
++		}
++		else if (npc->NPC->rank >= RANK_LT_COMM)
++		{
++			react -= 50;
++		}
++		else if (npc->NPC->rank <= RANK_CREWMAN)
++		{
++			react += 80; // padawans, cultists
++		}
++	}
++	react = react * mb2_npc_react->integer / 100;
++	return react < 60 ? 60 : react;
++}
++
++static int MB2_NPCPerfectChance(const gentity_t* npc)
++{
++	int chance;
++	switch (g_spskill->integer)
++	{
++	case 0: chance = 35; break;
++	case 1: chance = 55; break;
++	default: chance = 75; break;
++	}
++	if (npc->NPC && npc->NPC->rank >= RANK_CAPTAIN)
++	{
++		chance += 15;
++	}
++	return chance;
++}
++
++static int MB2_NPCDisarmChance(const gentity_t* npc)
++{
++	int chance;
++	switch (g_spskill->integer)
++	{
++	case 0: chance = 2; break;
++	case 1: chance = 5; break;
++	default: chance = 9; break;
++	}
++	if (npc->NPC && npc->NPC->rank >= RANK_CAPTAIN)
++	{
++		chance += 5;
++	}
++	return chance;
++}
++
++// How long the attacker's current swing has been running, in ms.
++static int MB2_SwingElapsedMs(const gentity_t* attacker)
++{
++	const int len = PM_AnimLength(attacker->client->clientInfo.animFileIndex,
++		static_cast<animNumber_t>(attacker->client->ps.torsoAnim));
++	const int elapsed = len - attacker->client->ps.torsoAnimTimer;
++	return elapsed < 0 ? 0 : elapsed;
++}
++
++// ---------------------------------------------------------------------------
++// Cooldowns per entity (MBlock attempt, NPC disarm)
++// ---------------------------------------------------------------------------
++static int mb2_mblock_ready[MAX_GENTITIES];
++static int mb2_npc_disarm_ready[MAX_GENTITIES];
++
++static qboolean MB2_IsPlayer(const gentity_t* ent)
++{
++	return ent->s.number < MAX_CLIENTS || G_ControlledByPlayer(ent) ? qtrue : qfalse;
++}
++
++static void MB2_Debug(const gentity_t* blocker, const gentity_t* attacker, const char* what)
++{
++	if (mb2_debug->integer || d_blockinfo->integer)
++	{
++		if (MB2_IsPlayer(blocker) || MB2_IsPlayer(attacker))
++		{
++			gi.Printf(S_COLOR_GREEN "MB2: %s (BP %d)\n", what, blocker->client->ps.blockPoints);
++		}
++	}
++}
++
++static void MB2_MarkBlocked(gentity_t* blocker, gentity_t* attacker, const int saber_num, const int blade_num)
++{
++	blocker->client->ps.saberEventFlags |= SEF_PARRIED;
++	attacker->client->ps.saberEventFlags |= SEF_BLOCKED;
++	wp_saber_clear_damage_for_ent_num(attacker, blocker->s.number, saber_num, blade_num);
++}
++
++// A swing that could not be blocked lands on the body.
++static void MB2_HitThrough(gentity_t* blocker, gentity_t* attacker, const int saber_num, const int blade_num, vec3_t hit_loc)
++{
++	vec3_t dir;
++	VectorSubtract(blocker->client->ps.origin, attacker->client->ps.origin, dir);
++	dir[2] = 0;
++	VectorNormalize(dir);
++	wp_saber_clear_damage_for_ent_num(attacker, blocker->s.number, saber_num, blade_num);
++	G_Damage(blocker, attacker, attacker, dir, hit_loc, mb2_back_damage->integer, DAMAGE_NO_KNOCKBACK, MOD_SABER);
++}
++
++static void MB2_PerfectBlockEffects(gentity_t* blocker, gentity_t* attacker, vec3_t hit_loc, const int saber_num, const int blade_num)
++{
++	WP_SaberMBlock(blocker, attacker, saber_num, blade_num, hit_loc);
++	SabBeh_AnimateSlowBounce(attacker);
++	wp_block_points_regenerate_over_ride(blocker, 8);
++	blocker->client->ps.saberFatigueChainCount = MISHAPLEVEL_NONE;
++	blocker->client->ps.userInt3 |= 1 << FLAG_PERFECTBLOCK;
++
++	if (MB2_IsPlayer(blocker))
++	{
++		CGCam_BlockShakeSP(0.35f, 80);
++	}
++	G_Sound(blocker, G_SoundIndex(va("sound/weapons/saber/saber_perfectblock%d.mp3", Q_irand(1, 3))));
++	MB2_MarkBlocked(blocker, attacker, saber_num, blade_num);
++}
++
++// Normal block, or a broken block when the block points run out.
++static void MB2_NormalBlock(gentity_t* blocker, gentity_t* attacker, vec3_t hit_loc, const int saber_num, const int blade_num)
++{
++	const int cost = MB2_BlockCost(blocker, attacker);
++
++	if (blocker->client->ps.blockPoints <= cost)
++	{
++		// out of block points: the guard breaks
++		blocker->client->ps.blockPoints = 0;
++		G_Stagger(blocker);
++		const int disarm_chance = MB2_IsPlayer(blocker) ? 50 : 35;
++		if (Q_irand(0, 99) < disarm_chance)
++		{
++			SabBeh_SaberShouldBeDisarmedBlocker(blocker, saber_num);
++			MB2_Debug(blocker, attacker, "guard broken, saber lost");
++		}
++		else
++		{
++			MB2_Debug(blocker, attacker, "guard broken, stagger");
++		}
++		MB2_MarkBlocked(blocker, attacker, saber_num, blade_num);
++		return;
++	}
++
++	PM_AddBlockFatigue(&blocker->client->ps, cost);
++	if (blocker->client->ps.blockPoints <= BLOCK_POINTS_MAX / 2)
++	{
++		WP_SaberFatiguedParry(blocker, attacker, saber_num, blade_num, hit_loc);
++	}
++	else
++	{
++		WP_SaberParry(blocker, attacker, saber_num, blade_num);
++	}
++	if (MB2_IsPlayer(blocker))
++	{
++		CGCam_BlockShakeSP(0.45f, 100);
++	}
++	MB2_MarkBlocked(blocker, attacker, saber_num, blade_num);
++	MB2_Debug(blocker, attacker, va("normal block, cost %d", cost));
++}
++
++// ---------------------------------------------------------------------------
++// Entry point, called for every saber-on-saber block in Advanced MD mode.
++// Returns qtrue when the MB2 rules handled the block (the old MD rules are
++// then skipped), qfalse to fall back to the MD rules.
++// ---------------------------------------------------------------------------
++qboolean MB2_ResolveBlock(gentity_t* blocker, gentity_t* attacker, const int saber_num, const int blade_num, vec3_t hit_loc)
++{
++	MB2_RegisterCvars();
++
++	if (!mb2_on->integer || g_SerenityJediEngineMode->integer != 2)
++	{
++		return qfalse;
++	}
++	if (!blocker || !attacker || !blocker->client || !attacker->client)
++	{
++		return qfalse;
++	}
++	if (blocker->client->ps.weapon != WP_SABER || attacker->client->ps.weapon != WP_SABER)
++	{
++		return qfalse;
++	}
++	if (pm_saber_innonblockable_attack(attacker->client->ps.torsoAnim))
++	{
++		return qfalse; // special unblockable moves keep their MD behaviour
++	}
++
++	const qboolean player_blocker = MB2_IsPlayer(blocker);
++	const qboolean holding_block = blocker->client->ps.ManualBlockingFlags & 1 << HOLDINGBLOCK ? qtrue : qfalse;
++	const qboolean npc_blocking = blocker->client->ps.ManualBlockingFlags & 1 << MBF_NPCBLOCKING ? qtrue : qfalse;
++
++	if (player_blocker && !holding_block)
++	{
++		return qfalse; // player not blocking: MD rules (mishap, body hit)
++	}
++
++	// 1. Only attacks from the front can be blocked.
++	vec3_t blocker_yaw = { 0, blocker->client->ps.viewangles[YAW], 0 };
++	if (!InFront(attacker->client->ps.origin, blocker->client->ps.origin, blocker_yaw, -0.1f))
++	{
++		MB2_HitThrough(blocker, attacker, saber_num, blade_num, hit_loc);
++		MB2_Debug(blocker, attacker, "hit from the side/back, not blockable");
++		return qtrue;
++	}
++
++	const mb2Zone_t incoming = MB2_IncomingZone(saber_moveData[attacker->client->ps.saber_move].startQuad);
++
++	if (player_blocker)
++	{
++		// 2. Player: aim (or keys) decides perfect block
++		const mb2Zone_t aim = mb2_input->integer ? MB2_KeyZone(blocker) : MB2_AimZone(blocker, attacker);
++		const qboolean perfect = MB2_ZoneMatches(incoming, aim);
++
++		// 3. MBlock: tapped attack while blocking, right before the hit
++		const qboolean tapped = blocker->client->ps.ManualBlockingFlags & 1 << PERFECTBLOCKING ? qtrue : qfalse;
++		if (tapped && level.time >= mb2_mblock_ready[blocker->s.number])
++		{
++			// required keys: the attacker's side, height flipped (W and S swapped)
++			const mb2Zone_t keys = MB2_KeyZone(blocker);
++			const qboolean keys_ok = keys.col == -incoming.col && keys.row == -incoming.row ? qtrue : qfalse;
++
++			if (perfect && keys_ok)
++			{
++				mb2_mblock_ready[blocker->s.number] = level.time + 1500;
++				MB2_PerfectBlockEffects(blocker, attacker, hit_loc, saber_num, blade_num);
++				sab_beh_saber_should_be_disarmed_attacker(attacker, saber_num);
++				if (d_slowmoaction->integer)
++				{
++					G_StartStasisEffect_FORCE_LEVEL_1(blocker, MEF_NO_SPIN, 250, 0.3f, 0);
++				}
++				MB2_Debug(blocker, attacker, "MBLOCK - attacker disarmed");
++				return qtrue;
++			}
++			// failed MBlock: short cooldown and a block point penalty
++			mb2_mblock_ready[blocker->s.number] = level.time + 1000;
++			PM_AddBlockFatigue(&blocker->client->ps, 10);
++			MB2_Debug(blocker, attacker, "MBlock failed (-10 BP)");
++		}
++
++		if (perfect)
++		{
++			MB2_PerfectBlockEffects(blocker, attacker, hit_loc, saber_num, blade_num);
++			MB2_Debug(blocker, attacker, "PERFECT BLOCK");
++		}
++		else
++		{
++			MB2_NormalBlock(blocker, attacker, hit_loc, saber_num, blade_num);
++		}
++		return qtrue;
++	}
++
++	// 4. NPC blocker
++	if (!npc_blocking && !(blocker->client->ps.ManualBlockingFlags & 1 << HOLDINGBLOCK)
++		&& !PM_SaberInParry(blocker->client->ps.saber_move))
++	{
++		return qfalse; // NPC was not defending: MD rules
++	}
++
++	const qboolean saw_it = MB2_SwingElapsedMs(attacker) >= MB2_NPCReactionMs(blocker) ? qtrue : qfalse;
++	if (saw_it && Q_irand(0, 99) < MB2_NPCPerfectChance(blocker))
++	{
++		MB2_PerfectBlockEffects(blocker, attacker, hit_loc, saber_num, blade_num);
++
++		if (level.time >= mb2_npc_disarm_ready[blocker->s.number]
++			&& Q_irand(0, 99) < MB2_NPCDisarmChance(blocker))
++		{
++			mb2_npc_disarm_ready[blocker->s.number] = level.time + 6000;
++			sab_beh_saber_should_be_disarmed_attacker(attacker, saber_num);
++			MB2_Debug(blocker, attacker, "NPC MBlock - you were disarmed");
++		}
++		else
++		{
++			MB2_Debug(blocker, attacker, "NPC perfect block");
++		}
++		return qtrue;
++	}
++
++	MB2_NormalBlock(blocker, attacker, hit_loc, saber_num, blade_num);
++	return qtrue;
++}
