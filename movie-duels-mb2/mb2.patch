@@ -33,18 +33,28 @@ index dc9e68d..0f7889d 100644
  	"${SPDir}/game/wp_stun_baton.cpp"
  	"${SPDir}/game/wp_thermal.cpp"
 diff --git a/code/game/wp_saber.cpp b/code/game/wp_saber.cpp
-index 3bbd3f3..9707da3 100644
+index 3bbd3f3..41557d0 100644
 --- a/code/game/wp_saber.cpp
 +++ b/code/game/wp_saber.cpp
-@@ -287,6 +287,7 @@ extern qboolean jedi_win_po(const gentity_t* self);
+@@ -287,6 +287,9 @@ extern qboolean jedi_win_po(const gentity_t* self);
  void WP_BlockPointsDrain(const gentity_t* self, int fatigue);
  extern qboolean sab_beh_attack_vs_block(gentity_t* attacker, gentity_t* blocker, int saber_num, int blade_num, vec3_t hit_loc);
  extern qboolean sab_beh_block_vs_attack(gentity_t* blocker, gentity_t* attacker, int saber_num, int blade_num, vec3_t hit_loc);
 +extern qboolean MB2_ResolveBlock(gentity_t* blocker, gentity_t* attacker, int saber_num, int blade_num, vec3_t hit_loc);
++extern qboolean MB2_SkipIdleParry(const gentity_t* defender);
++extern int MB2_BodyHitDamage(const gentity_t* attacker, const gentity_t* victim, int damage, int* d_flags);
  extern void g_fatigue_bp_knockaway(gentity_t* blocker);
  void G_Beskar_Attack_Bounce(const gentity_t* self, gentity_t* other);
  extern qboolean Mandalorian_Character(const gentity_t* self);
-@@ -10070,11 +10071,14 @@ static void wp_saber_damage_trace_amd(gentity_t* ent, int saber_num, int blade_n
+@@ -3998,6 +4001,7 @@ static qboolean WP_SaberApplyDamageMD(gentity_t* ent, const float base_damage, c
+ 					{
+ 						damage = ceil(totalDmg[i]);
+ 					}
++					damage = MB2_BodyHitDamage(ent, victim, damage, &d_flags); // MB2: unblocked hit kills
+ 					G_Damage(victim, inflictor, ent, dmgDir[i], dmgSpot[i], damage, d_flags, MOD_SABER,
+ 						hitDismemberLoc[i]);
+ 					if (damage > 0 && cg.time)
+@@ -10070,11 +10074,14 @@ static void wp_saber_damage_trace_amd(gentity_t* ent, int saber_num, int blade_n
  					//I'm attacking hit, they're parrying
  					if (saberHitFraction < 1.0f)
  					{
@@ -63,7 +73,16 @@ index 3bbd3f3..9707da3 100644
  
  						collision_resolved = qtrue;
  					}
-@@ -11446,11 +11450,14 @@ static void WP_SaberDamageTrace_MD(gentity_t* ent, int saber_num, int blade_num)
+@@ -10187,7 +10194,7 @@ static void wp_saber_damage_trace_amd(gentity_t* ent, int saber_num, int blade_n
+ 					else
+ 					{
+ 						//saber collided when not attacking, parry it
+-						if (!PM_SaberInBrokenParry(hit_owner->client->ps.saber_move))
++						if (!PM_SaberInBrokenParry(hit_owner->client->ps.saber_move) && !MB2_SkipIdleParry(hit_owner))
+ 						{
+ 							if (!WP_SaberParry(hit_owner, ent, saber_num, blade_num))
+ 							{
+@@ -11446,11 +11453,14 @@ static void WP_SaberDamageTrace_MD(gentity_t* ent, int saber_num, int blade_num)
  					//I'm attacking hit, they're parrying
  					if (saberHitFraction < 1.0f)
  					{
@@ -84,10 +103,10 @@ index 3bbd3f3..9707da3 100644
  					}
 diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
 new file mode 100644
-index 0000000..aa3c681
+index 0000000..9d17fbe
 --- /dev/null
 +++ b/code/game/wp_saber_mb2.cpp
-@@ -0,0 +1,683 @@
+@@ -0,0 +1,754 @@
 +/*
 +===========================================================================
 +MB2-style saber blocking layer for Movie Duels (SP).
@@ -138,6 +157,7 @@ index 0000000..aa3c681
 +extern qboolean PM_SaberInParry(int move);
 +extern void CGCam_BlockShakeSP(float intensity, int duration);
 +extern qboolean PM_SaberInStart(int move);
++extern qboolean pm_saber_in_special_attack(int anim);
 +extern qboolean PM_SaberInAttack(int move);
 +extern qboolean PM_SaberInTransition(int move);
 +extern void G_StartStasisEffect_FORCE_LEVEL_1(const gentity_t* ent, int me_flags, int length, float time_scale, int spin_time);
@@ -155,6 +175,8 @@ index 0000000..aa3c681
 +static cvar_t* mb2_npc_react;   // NPC reaction time in percent (100 = default)
 +static cvar_t* mb2_back_damage; // damage of a hit that could not be blocked (from behind)
 +static cvar_t* mb2_debug;       // 1 = print what happened on each block
++static cvar_t* mb2_one_hit;     // 1 = a saber hit that is not blocked kills (MB2)
++static cvar_t* mb2_no_auto_parry; // 1 = no automatic parry for the player when not holding block
 +
 +static void MB2_RegisterCvars()
 +{
@@ -169,6 +191,8 @@ index 0000000..aa3c681
 +	mb2_npc_react = gi.cvar("g_MB2NPCReaction", "100", CVAR_ARCHIVE);
 +	mb2_back_damage = gi.cvar("g_MB2BackHitDamage", "30", CVAR_ARCHIVE);
 +	mb2_debug = gi.cvar("g_MB2Debug", "0", CVAR_ARCHIVE);
++	mb2_one_hit = gi.cvar("g_MB2OneHitKill", "1", CVAR_ARCHIVE);
++	mb2_no_auto_parry = gi.cvar("g_MB2NoAutoParry", "1", CVAR_ARCHIVE);
 +}
 +
 +// ---------------------------------------------------------------------------
@@ -522,7 +546,14 @@ index 0000000..aa3c681
 +
 +	if (player_blocker && !holding_block)
 +	{
-+		return qfalse; // player not blocking: MD rules (mishap, body hit)
++		if (mb2_no_auto_parry->integer)
++		{
++			// Like MB2: no block held = no automatic parry. The player's
++			// animation is not interrupted and the swing goes on to the body.
++			MB2_Debug(blocker, attacker, "not blocking - no auto parry");
++			return qtrue;
++		}
++		return qfalse; // old MD rules (automatic parry)
 +	}
 +
 +	// 1. Like MB2: blocking works all around (360 degrees). Only the disarm
@@ -770,4 +801,63 @@ index 0000000..aa3c681
 +		}
 +		MB2_WheelBox(cx, cy, aim.col, aim.row, radius * 0.8f, size * 0.8f, white);
 +	}
++}
++
++// ---------------------------------------------------------------------------
++// MB2 feel: no forced parry animation for the player when the sabers only
++// touch while the player is not holding block (e.g. just walking).
++// ---------------------------------------------------------------------------
++static qboolean MB2_Active()
++{
++	MB2_RegisterCvars();
++	return mb2_on->integer && g_SerenityJediEngineMode->integer == 2 ? qtrue : qfalse;
++}
++
++qboolean MB2_SkipIdleParry(const gentity_t* defender)
++{
++	if (!MB2_Active() || !mb2_no_auto_parry->integer || !defender || !defender->client)
++	{
++		return qfalse;
++	}
++	if (!MB2_IsPlayer(defender))
++	{
++		return qfalse;
++	}
++	return defender->client->ps.ManualBlockingFlags & 1 << HOLDINGBLOCK ? qfalse : qtrue;
++}
++
++// ---------------------------------------------------------------------------
++// MB2 feel: a real saber swing that reaches the body kills in one hit.
++// Only for actual attacks (not transitions or idle touches).
++// ---------------------------------------------------------------------------
++int MB2_BodyHitDamage(const gentity_t* attacker, const gentity_t* victim, const int damage, int* d_flags)
++{
++	if (!MB2_Active() || !mb2_one_hit->integer)
++	{
++		return damage;
++	}
++	if (!attacker || !attacker->client || !victim || !victim->client || victim->health <= 0 || damage <= 0)
++	{
++		return damage;
++	}
++	if (*d_flags & DAMAGE_NO_DAMAGE)
++	{
++		return damage; // armour (beskar) bounce
++	}
++	if (!PM_SaberInAttack(attacker->client->ps.saber_move)
++		&& !pm_saber_in_special_attack(attacker->client->ps.torsoAnim))
++	{
++		return damage; // not a real swing
++	}
++	if (victim->client->ps.ManualBlockingFlags & (1 << HOLDINGBLOCK | 1 << MBF_NPCBLOCKING))
++	{
++		return damage; // was holding block: the normal MD damage applies, never a one-hit kill
++	}
++	*d_flags &= ~DAMAGE_NO_KILL;
++	const int lethal = victim->health + victim->client->ps.stats[STAT_ARMOR] + 10;
++	if (MB2_IsPlayer(attacker) || MB2_IsPlayer(victim))
++	{
++		MB2_Debug(victim, attacker, "unblocked hit - lethal");
++	}
++	return lethal > damage ? lethal : damage;
 +}
