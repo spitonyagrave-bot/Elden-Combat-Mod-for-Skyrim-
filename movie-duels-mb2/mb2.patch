@@ -103,10 +103,10 @@ index 3bbd3f3..41557d0 100644
  					}
 diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
 new file mode 100644
-index 0000000..0c2544f
+index 0000000..83dd61d
 --- /dev/null
 +++ b/code/game/wp_saber_mb2.cpp
-@@ -0,0 +1,795 @@
+@@ -0,0 +1,792 @@
 +/*
 +===========================================================================
 +MB2-style saber blocking layer for Movie Duels (SP).
@@ -757,10 +757,7 @@ index 0000000..0c2544f
 +	const qboolean flash_disarm = mb2_hud_disarm_time && since_disarm >= 0 && since_disarm < 500 ? qtrue : qfalse;
 +	const int since_mbdef = level.time - mb2_hud_mbdef_time;
 +	const qboolean flash_mbdef = mb2_hud_mbdef_time && since_mbdef >= 0 && since_mbdef < 350 ? qtrue : qfalse;
-+	if (!enemy && !flash_perfect && !flash_disarm && !flash_mbdef)
-+	{
-+		return;
-+	}
++	// the ring is always shown while the saber is on, so you can see the mod is active
 +
 +	const float cx = 320.0f;
 +	const float cy = 240.0f;
