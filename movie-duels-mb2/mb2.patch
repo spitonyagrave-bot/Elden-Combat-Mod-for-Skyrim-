@@ -1,21 +1,43 @@
 diff --git a/code/cgame/cg_draw.cpp b/code/cgame/cg_draw.cpp
-index eaf1f08..902485a 100644
+index eaf1f08..e6fa401 100644
 --- a/code/cgame/cg_draw.cpp
 +++ b/code/cgame/cg_draw.cpp
-@@ -8399,6 +8399,8 @@ CG_Draw2D
+@@ -6273,6 +6273,9 @@ CROSSHAIR
+ CG_DrawCrosshair
+ =================
+ */
++static float mb2_crosshair_x = 320.0f, mb2_crosshair_y = 240.0f;
++static int mb2_crosshair_time;
++
+ static void CG_DrawCrosshair(vec3_t world_point)
+ {
+ 	float w, h;
+@@ -6524,6 +6527,10 @@ static void CG_DrawCrosshair(vec3_t world_point)
+ 		y = cg_crosshairY.integer;
+ 	}
+ 
++	mb2_crosshair_x = x + cg.refdef.x + 320; // MB2 wheel follows the crosshair
++	mb2_crosshair_y = y + cg.refdef.y + 240;
++	mb2_crosshair_time = cg.time;
++
+ 	if (cg.snap->ps.viewEntity > 0 && cg.snap->ps.viewEntity < ENTITYNUM_WORLD)
+ 	{
+ 		if (!Q_stricmp("misc_panel_turret", g_entities[cg.snap->ps.viewEntity].classname))
+@@ -8399,6 +8406,8 @@ CG_Draw2D
  */
  extern void CG_SaberClashFlare();
  
-+extern void MB2_DrawWheel(float aspect);
++extern void MB2_DrawWheel(float aspect, float cx, float cy);
 +
  static void CG_Draw2D()
  {
  	char text[1024] = { 0 };
-@@ -8505,6 +8507,8 @@ static void CG_Draw2D()
+@@ -8505,6 +8514,9 @@ static void CG_Draw2D()
  		CG_DrawHealthBars();
  	}
  
-+	MB2_DrawWheel(cgs.glconfig.vidWidth > 0 ? 640.0f * cgs.glconfig.vidHeight / (480.0f * cgs.glconfig.vidWidth) : 1.0f); // MB2 direction wheel
++	MB2_DrawWheel(cgs.glconfig.vidWidth > 0 ? 640.0f * cgs.glconfig.vidHeight / (480.0f * cgs.glconfig.vidWidth) : 1.0f,
++		cg.time - mb2_crosshair_time < 500 ? mb2_crosshair_x : 320.0f, cg.time - mb2_crosshair_time < 500 ? mb2_crosshair_y : 240.0f); // MB2 direction wheel
 +
  	if (cg_SerenityJediEngineMode.integer)
  	{
@@ -103,7 +125,7 @@ index 3bbd3f3..41557d0 100644
  					}
 diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
 new file mode 100644
-index 0000000..64e7cf4
+index 0000000..d6ffdd9
 --- /dev/null
 +++ b/code/game/wp_saber_mb2.cpp
 @@ -0,0 +1,804 @@
@@ -740,14 +762,14 @@ index 0000000..64e7cf4
 +	}
 +}
 +
-+void MB2_DrawWheel(const float aspect)
++void MB2_DrawWheel(const float aspect, const float wheel_x, const float wheel_y)
 +{
 +	aspect_fix = aspect > 0.0f ? aspect : 1.0f;
 +	MB2_RegisterCvars();
 +	if (!mb2_wheel)
 +	{
 +		mb2_wheel = gi.cvar("g_MB2Wheel", "1", CVAR_ARCHIVE);
-+		mb2_wheel_size = gi.cvar("g_MB2WheelRadius", "24", CVAR_ARCHIVE);
++		mb2_wheel_size = gi.cvar("g_MB2WheelRadius", "19", CVAR_ARCHIVE);
 +	}
 +	if (!mb2_on->integer || !mb2_wheel->integer || g_SerenityJediEngineMode->integer != 2)
 +	{
@@ -771,8 +793,8 @@ index 0000000..64e7cf4
 +	const qboolean flash_mbdef = mb2_hud_mbdef_time && since_mbdef >= 0 && since_mbdef < 350 ? qtrue : qfalse;
 +	// the ring is always shown while the saber is on, so you can see the mod is active
 +
-+	const float cx = 320.0f;
-+	const float cy = 240.0f;
++	const float cx = wheel_x;
++	const float cy = wheel_y;
 +	const float radius = mb2_wheel_size->value;
 +	const float size = 0.9f; // dot size of the ring (640x480 units)
 +
