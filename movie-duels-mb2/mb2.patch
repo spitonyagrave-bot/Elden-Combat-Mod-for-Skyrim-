@@ -62,7 +62,7 @@ index 528ea80..86b48b0 100644
  					}
 diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
 new file mode 100644
-index 0000000..c80546a
+index 0000000..7e3cdd5
 --- /dev/null
 +++ b/code/game/wp_saber_mb2.cpp
 @@ -0,0 +1,509 @@
@@ -258,7 +258,7 @@ index 0000000..c80546a
 +
 +static int MB2_BlockCost(const gentity_t* blocker, const gentity_t* attacker)
 +{
-+	float cost = MB2_StyleCost(attacker->client->ps.saber_anim_level);
++	float cost = MB2_StyleCost(attacker->client->ps.saberAnimLevel);
 +
 +	// attacker state
 +	if (attacker->client->ps.groundEntityNum == ENTITYNUM_NONE)
