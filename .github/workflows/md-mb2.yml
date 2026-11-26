@@ -18,7 +18,7 @@ jobs:
       - name: Get Movie Duels source (Update 7)
         shell: bash
         run: |
-          git clone https://github.com/MovieDuels/MovieDuels-SJE-SP-Rend2.git md
+          git clone -c core.autocrlf=false https://github.com/MovieDuels/MovieDuels-SJE-SP-Rend2.git md
           cd md
           git checkout 17d1c650
           git apply --whitespace=nowarn ../movie-duels-mb2/mb2.patch
