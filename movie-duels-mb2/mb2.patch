@@ -127,10 +127,10 @@ index 3bbd3f3..41557d0 100644
  					}
 diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
 new file mode 100644
-index 0000000..a066c51
+index 0000000..6cfe799
 --- /dev/null
 +++ b/code/game/wp_saber_mb2.cpp
-@@ -0,0 +1,840 @@
+@@ -0,0 +1,843 @@
 +/*
 +===========================================================================
 +MB2-style saber blocking layer for Movie Duels (SP).
@@ -789,7 +789,10 @@ index 0000000..a066c51
 +
 +void MB2_DrawWheel(const float aspect, const float wheel_x, const float wheel_y, const float crosshair_size)
 +{
-+	aspect_fix = aspect > 0.0f ? aspect : 1.0f; // round ring on widescreen, like the crosshair
++	// Stretched exactly like the Movie Duels crosshair (which is not aspect
++	// corrected), so the ring always sits evenly around it.
++	(void)aspect;
++	aspect_fix = 1.0f;
 +	MB2_RegisterCvars();
 +	if (!mb2_wheel)
 +	{
