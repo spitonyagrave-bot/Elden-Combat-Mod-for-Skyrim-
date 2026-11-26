@@ -20,7 +20,7 @@ jobs:
         run: |
           git clone -c core.autocrlf=false https://github.com/MovieDuels/MovieDuels-SJE-SP-Rend2.git md
           cd md
-          git checkout 17d1c650
+          git checkout 17d1c6523479ae6d44c93044e39061ce66d6b2b5
           git apply --whitespace=nowarn ../movie-duels-mb2/mb2.patch
 
       - name: Configure

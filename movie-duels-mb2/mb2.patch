@@ -62,10 +62,10 @@ index 6160d10..676dc58 100644
  					}
 diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
 new file mode 100644
-index 0000000..7fdbc8d
+index 0000000..e900600
 --- /dev/null
 +++ b/code/game/wp_saber_mb2.cpp
-@@ -0,0 +1,511 @@
+@@ -0,0 +1,515 @@
 +/*
 +===========================================================================
 +MB2-style saber blocking layer for Movie Duels (SP).
@@ -216,6 +216,10 @@ index 0000000..7fdbc8d
 +// up/down/left/right, easy = any neighbour (diagonals too).
 +static qboolean MB2_ZoneMatches(const mb2Zone_t& want, const mb2Zone_t& have)
 +{
++	if (have.col == 0 && have.row == 0)
++	{
++		return qfalse; // aiming straight at the enemy is not a perfect block, you have to aim at the swing
++	}
 +	const int dc = abs(want.col - have.col);
 +	const int dr = abs(want.row - have.row);
 +	if (dc == 0 && dr == 0)
