@@ -1,43 +1,45 @@
 diff --git a/code/cgame/cg_draw.cpp b/code/cgame/cg_draw.cpp
-index eaf1f08..e6fa401 100644
+index eaf1f08..3ad5971 100644
 --- a/code/cgame/cg_draw.cpp
 +++ b/code/cgame/cg_draw.cpp
-@@ -6273,6 +6273,9 @@ CROSSHAIR
+@@ -6273,6 +6273,10 @@ CROSSHAIR
  CG_DrawCrosshair
  =================
  */
 +static float mb2_crosshair_x = 320.0f, mb2_crosshair_y = 240.0f;
 +static int mb2_crosshair_time;
++static float mb2_crosshair_h = 24.0f;
 +
  static void CG_DrawCrosshair(vec3_t world_point)
  {
  	float w, h;
-@@ -6524,6 +6527,10 @@ static void CG_DrawCrosshair(vec3_t world_point)
+@@ -6524,6 +6528,11 @@ static void CG_DrawCrosshair(vec3_t world_point)
  		y = cg_crosshairY.integer;
  	}
  
 +	mb2_crosshair_x = x + cg.refdef.x + 320; // MB2 wheel follows the crosshair
 +	mb2_crosshair_y = y + cg.refdef.y + 240;
 +	mb2_crosshair_time = cg.time;
++	mb2_crosshair_h = h;
 +
  	if (cg.snap->ps.viewEntity > 0 && cg.snap->ps.viewEntity < ENTITYNUM_WORLD)
  	{
  		if (!Q_stricmp("misc_panel_turret", g_entities[cg.snap->ps.viewEntity].classname))
-@@ -8399,6 +8406,8 @@ CG_Draw2D
+@@ -8399,6 +8408,8 @@ CG_Draw2D
  */
  extern void CG_SaberClashFlare();
  
-+extern void MB2_DrawWheel(float aspect, float cx, float cy);
++extern void MB2_DrawWheel(float aspect, float cx, float cy, float crosshair_size);
 +
  static void CG_Draw2D()
  {
  	char text[1024] = { 0 };
-@@ -8505,6 +8514,9 @@ static void CG_Draw2D()
+@@ -8505,6 +8516,9 @@ static void CG_Draw2D()
  		CG_DrawHealthBars();
  	}
  
 +	MB2_DrawWheel(cgs.glconfig.vidWidth > 0 ? 640.0f * cgs.glconfig.vidHeight / (480.0f * cgs.glconfig.vidWidth) : 1.0f,
-+		cg.time - mb2_crosshair_time < 500 ? mb2_crosshair_x : 320.0f, cg.time - mb2_crosshair_time < 500 ? mb2_crosshair_y : 240.0f); // MB2 direction wheel
++		cg.time - mb2_crosshair_time < 500 ? mb2_crosshair_x : 320.0f, cg.time - mb2_crosshair_time < 500 ? mb2_crosshair_y : 240.0f, mb2_crosshair_h); // MB2 direction wheel
 +
  	if (cg_SerenityJediEngineMode.integer)
  	{
@@ -125,7 +127,7 @@ index 3bbd3f3..41557d0 100644
  					}
 diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
 new file mode 100644
-index 0000000..9013d60
+index 0000000..15c86a4
 --- /dev/null
 +++ b/code/game/wp_saber_mb2.cpp
 @@ -0,0 +1,777 @@
@@ -771,14 +773,14 @@ index 0000000..9013d60
 +	}
 +}
 +
-+void MB2_DrawWheel(const float aspect, const float wheel_x, const float wheel_y)
++void MB2_DrawWheel(const float aspect, const float wheel_x, const float wheel_y, const float crosshair_size)
 +{
 +	aspect_fix = aspect > 0.0f ? aspect : 1.0f;
 +	MB2_RegisterCvars();
 +	if (!mb2_wheel)
 +	{
 +		mb2_wheel = gi.cvar("g_MB2Wheel", "1", CVAR_ARCHIVE);
-+		mb2_wheel_size = gi.cvar("g_MB2IndicatorRadius", "11", CVAR_ARCHIVE);
++		mb2_wheel_size = gi.cvar("g_MB2IndicatorGap", "2", CVAR_ARCHIVE); // distance from the crosshair edge
 +	}
 +	if (!mb2_on->integer || !mb2_wheel->integer || g_SerenityJediEngineMode->integer != 2)
 +	{
@@ -796,7 +798,7 @@ index 0000000..9013d60
 +
 +	const float cx = wheel_x;
 +	const float cy = wheel_y;
-+	const float radius = mb2_wheel_size->value;
++	const float radius = crosshair_size * 0.5f + mb2_wheel_size->value; // just outside the crosshair
 +	const float thick = 1.3f;
 +
 +	// short flash in the last direction after a block result (MB2 colours)
