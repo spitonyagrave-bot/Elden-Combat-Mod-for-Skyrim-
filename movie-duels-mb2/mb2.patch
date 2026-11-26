@@ -103,10 +103,10 @@ index 3bbd3f3..41557d0 100644
  					}
 diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
 new file mode 100644
-index 0000000..83dd61d
+index 0000000..ab40acd
 --- /dev/null
 +++ b/code/game/wp_saber_mb2.cpp
-@@ -0,0 +1,792 @@
+@@ -0,0 +1,802 @@
 +/*
 +===========================================================================
 +MB2-style saber blocking layer for Movie Duels (SP).
@@ -720,13 +720,23 @@ index 0000000..83dd61d
 +	return best;
 +}
 +
-+static void MB2_WheelBox(const float cx, const float cy, const int col, const int row, const float radius,
-+	const float size, const float* color)
++// Thin arc segment around the crosshair, drawn as a row of tiny dots.
++// Zone (col,row) -> direction on screen; the aspect ratio is corrected so
++// the ring stays round on widescreen.
++static void MB2_WheelArc(const float cx, const float cy, const int col, const int row, const float radius,
++	const float thick, const float* color)
 +{
-+	const float diag = (col != 0 && row != 0) ? 0.7071f : 1.0f;
-+	const float x = cx + col * radius * diag - size * 0.5f;
-+	const float y = cy - row * radius * diag - size * 0.5f;
-+	CG_FillRect(x, y, size, size, color);
++	const float aspect_fix = 640.0f * cgs.glconfig.vidHeight / (480.0f * (cgs.glconfig.vidWidth > 0 ? cgs.glconfig.vidWidth : 640));
++	const float center = atan2f(static_cast<float>(row), static_cast<float>(col)); // 0 = right, pi/2 = up
++	const float half = DEG2RAD(17.0f);
++	const int dots = 9;
++	for (int i = 0; i < dots; i++)
++	{
++		const float a = center - half + 2.0f * half * i / (dots - 1);
++		const float x = cx + cosf(a) * radius * aspect_fix - thick * aspect_fix * 0.5f;
++		const float y = cy - sinf(a) * radius - thick * 0.5f;
++		CG_FillRect(x, y, thick * aspect_fix, thick, color);
++	}
 +}
 +
 +void MB2_DrawWheel()
@@ -735,7 +745,7 @@ index 0000000..83dd61d
 +	if (!mb2_wheel)
 +	{
 +		mb2_wheel = gi.cvar("g_MB2Wheel", "1", CVAR_ARCHIVE);
-+		mb2_wheel_size = gi.cvar("g_MB2WheelSize", "40", CVAR_ARCHIVE);
++		mb2_wheel_size = gi.cvar("g_MB2WheelRadius", "14", CVAR_ARCHIVE);
 +	}
 +	if (!mb2_on->integer || !mb2_wheel->integer || g_SerenityJediEngineMode->integer != 2)
 +	{
@@ -762,10 +772,10 @@ index 0000000..83dd61d
 +	const float cx = 320.0f;
 +	const float cy = 240.0f;
 +	const float radius = mb2_wheel_size->value;
-+	const float size = radius * 0.28f;
++	const float size = 0.9f; // dot size of the ring (640x480 units)
 +
 +	// ring
-+	vec4_t ring = { 0.6f, 0.6f, 0.6f, 0.35f };
++	vec4_t ring = { 0.85f, 0.85f, 0.85f, 0.22f };
 +	if (flash_disarm)
 +	{
 +		const float a = 1.0f - since_disarm / 500.0f;
@@ -790,7 +800,7 @@ index 0000000..83dd61d
 +		{
 +			if (c || r)
 +			{
-+				MB2_WheelBox(cx, cy, c, r, radius, size * 0.55f, ring);
++				MB2_WheelArc(cx, cy, c, r, radius, size, ring);
 +			}
 +		}
 +	}
@@ -826,7 +836,7 @@ index 0000000..83dd61d
 +		{
 +			VectorSet(red, 0.2f, 1.0f, 0.3f);
 +		}
-+		MB2_WheelBox(cx, cy, incoming.col, incoming.row, radius * 1.18f, size, red);
++		MB2_WheelArc(cx, cy, incoming.col, incoming.row, radius + 2.5f, size * 1.6f, red);
 +	}
 +	if (holding_block && (aim.col || aim.row))
 +	{
@@ -835,7 +845,7 @@ index 0000000..83dd61d
 +		{
 +			VectorSet(white, 0.2f, 1.0f, 0.3f);
 +		}
-+		MB2_WheelBox(cx, cy, aim.col, aim.row, radius * 0.8f, size * 0.8f, white);
++		MB2_WheelArc(cx, cy, aim.col, aim.row, radius - 2.5f, size * 1.3f, white);
 +	}
 +}
 +
