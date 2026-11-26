@@ -127,10 +127,10 @@ index 3bbd3f3..41557d0 100644
  					}
 diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
 new file mode 100644
-index 0000000..15c86a4
+index 0000000..4ced26d
 --- /dev/null
 +++ b/code/game/wp_saber_mb2.cpp
-@@ -0,0 +1,777 @@
+@@ -0,0 +1,822 @@
 +/*
 +===========================================================================
 +MB2-style saber blocking layer for Movie Duels (SP).
@@ -744,11 +744,13 @@ index 0000000..15c86a4
 +	return best;
 +}
 +
-+// MB2-style indicator: one short green arc next to the crosshair, only in
-+// the direction a swing comes from. Nothing is drawn otherwise.
-+// The aspect ratio is corrected so the arc stays round on widescreen.
++// MB2-style perfect block indicator (like MB2's pbindicator):
++// a dark ring around the crosshair, shown only while you aim at an enemy.
++// When the enemy swings, a thick green arc on the ring points from your
++// crosshair towards the spot you have to aim at for a perfect block, so it
++// turns with the angle you look at the enemy. On target the whole ring glows.
++// The aspect ratio is corrected so the ring stays round on widescreen.
 +static float aspect_fix = 1.0f; // set each frame by MB2_DrawWheel
-+static mb2Zone_t mb2_hud_last_zone = { 0, 0 };
 +
 +static void MB2_SetColor(vec4_t c, const float r, const float g, const float b, const float a)
 +{
@@ -758,18 +760,24 @@ index 0000000..15c86a4
 +	c[3] = a;
 +}
 +
-+static void MB2_WheelArc(const float cx, const float cy, const int col, const int row, const float radius,
-+	const float thick, const float* color)
++// arc from angle a0 to a1 (radians, 0 = right, counter-clockwise), drawn as
++// small squares in several bands so it looks like a solid thick stroke
++static void MB2_Arc(const float cx, const float cy, const float a0, const float a1, const float radius,
++	const float width, const float* color)
 +{
-+	const float center = atan2f(static_cast<float>(row), static_cast<float>(col)); // 0 = right, pi/2 = up
-+	const float half = DEG2RAD(26.0f);
-+	const int dots = 21;
-+	for (int i = 0; i < dots; i++)
++	const float dot = 1.2f;
++	const int bands = width > dot ? static_cast<int>(width / (dot * 0.8f)) + 1 : 1;
++	for (int b = 0; b < bands; b++)
 +	{
-+		const float a = center - half + 2.0f * half * i / (dots - 1);
-+		const float x = cx + cosf(a) * radius * aspect_fix - thick * aspect_fix * 0.5f;
-+		const float y = cy - sinf(a) * radius - thick * 0.5f;
-+		CG_FillRect(x, y, thick * aspect_fix, thick, color);
++		const float r = bands > 1 ? radius - width * 0.5f + width * b / (bands - 1) : radius;
++		const int steps = static_cast<int>(fabsf(a1 - a0) * r / (dot * 0.7f)) + 2;
++		for (int i = 0; i < steps; i++)
++		{
++			const float a = a0 + (a1 - a0) * i / (steps - 1);
++			const float x = cx + cosf(a) * r * aspect_fix - dot * aspect_fix * 0.5f;
++			const float y = cy - sinf(a) * r - dot * 0.5f;
++			CG_FillRect(x, y, dot * aspect_fix, dot, color);
++		}
 +	}
 +}
 +
@@ -780,7 +788,7 @@ index 0000000..15c86a4
 +	if (!mb2_wheel)
 +	{
 +		mb2_wheel = gi.cvar("g_MB2Wheel", "1", CVAR_ARCHIVE);
-+		mb2_wheel_size = gi.cvar("g_MB2IndicatorGap", "2", CVAR_ARCHIVE); // distance from the crosshair edge
++		mb2_wheel_size = gi.cvar("g_MB2IndicatorGap", "3", CVAR_ARCHIVE); // ring distance from the crosshair edge
 +	}
 +	if (!mb2_on->integer || !mb2_wheel->integer || g_SerenityJediEngineMode->integer != 2)
 +	{
@@ -795,44 +803,64 @@ index 0000000..15c86a4
 +	{
 +		return;
 +	}
-+
-+	const float cx = wheel_x;
-+	const float cy = wheel_y;
-+	const float radius = crosshair_size * 0.5f + mb2_wheel_size->value; // just outside the crosshair
-+	const float thick = 1.3f;
-+
-+	// short flash in the last direction after a block result (MB2 colours)
-+	const int since_perfect = level.time - mb2_hud_perfect_time;
-+	const int since_disarm = level.time - mb2_hud_disarm_time;
-+	const int since_mbdef = level.time - mb2_hud_mbdef_time;
-+	if (mb2_hud_last_zone.col || mb2_hud_last_zone.row)
-+	{
-+		vec4_t flash = { 0, 0, 0, 0 };
-+		if (mb2_hud_disarm_time && since_disarm >= 0 && since_disarm < 450)
-+		{
-+			MB2_SetColor(flash, 0.3f, 0.6f, 1.0f, 1.0f - since_disarm / 450.0f); // blue = disarm
-+		}
-+		else if (mb2_hud_perfect_time && since_perfect >= 0 && since_perfect < 300)
-+		{
-+			MB2_SetColor(flash, 0.6f, 1.0f, 0.6f, 1.0f - since_perfect / 300.0f); // bright green = perfect block
-+		}
-+		else if (mb2_hud_mbdef_time && since_mbdef >= 0 && since_mbdef < 300)
-+		{
-+			MB2_SetColor(flash, 1.0f, 0.85f, 0.1f, 1.0f - since_mbdef / 300.0f); // yellow = MB defense
-+		}
-+		if (flash[3] > 0.0f)
-+		{
-+			MB2_WheelArc(cx, cy, mb2_hud_last_zone.col, mb2_hud_last_zone.row, radius, thick * 1.4f, flash);
-+			return;
-+		}
-+	}
-+
-+	// incoming swing direction
 +	const gentity_t* enemy = MB2_HudEnemy(player);
 +	if (!enemy)
 +	{
 +		return;
 +	}
++
++	// only while you aim at the enemy (crosshair on or near them)
++	vec3_t from, to, dir, ang;
++	VectorCopy(player->client->ps.origin, from);
++	from[2] += player->client->ps.viewheight;
++	VectorCopy(enemy->client->ps.origin, to);
++	to[2] += enemy->client->ps.viewheight * 0.75f; // chest
++	VectorSubtract(to, from, dir);
++	vectoangles(dir, ang);
++	const float d_yaw = AngleSubtract(player->client->ps.viewangles[YAW], ang[YAW]);     // + = looking left of the enemy
++	const float d_pitch = AngleSubtract(player->client->ps.viewangles[PITCH], ang[PITCH]); // + = looking below the enemy
++	if (fabsf(d_yaw) > 35.0f || fabsf(d_pitch) > 35.0f)
++	{
++		return;
++	}
++
++	const float cx = wheel_x;
++	const float cy = wheel_y;
++	float radius = crosshair_size * 0.5f + mb2_wheel_size->value;
++	if (radius < 9.0f)
++	{
++		radius = 9.0f;
++	}
++	const float width = 3.2f;
++
++	// dark ring
++	vec4_t dark = { 0.0f, 0.0f, 0.0f, 0.45f };
++	MB2_Arc(cx, cy, 0.0f, 2.0f * M_PI, radius, width, dark);
++
++	// flash after a block result (MB2 colours)
++	const int since_perfect = level.time - mb2_hud_perfect_time;
++	const int since_disarm = level.time - mb2_hud_disarm_time;
++	const int since_mbdef = level.time - mb2_hud_mbdef_time;
++	vec4_t flash = { 0, 0, 0, 0 };
++	if (mb2_hud_disarm_time && since_disarm >= 0 && since_disarm < 450)
++	{
++		MB2_SetColor(flash, 0.3f, 0.6f, 1.0f, 1.0f - since_disarm / 450.0f); // blue = disarm
++	}
++	else if (mb2_hud_perfect_time && since_perfect >= 0 && since_perfect < 300)
++	{
++		MB2_SetColor(flash, 0.5f, 1.0f, 0.5f, 1.0f - since_perfect / 300.0f); // green = perfect block
++	}
++	else if (mb2_hud_mbdef_time && since_mbdef >= 0 && since_mbdef < 300)
++	{
++		MB2_SetColor(flash, 1.0f, 0.85f, 0.1f, 1.0f - since_mbdef / 300.0f); // yellow = MB defense
++	}
++	if (flash[3] > 0.0f)
++	{
++		MB2_Arc(cx, cy, 0.0f, 2.0f * M_PI, radius, width, flash);
++		return;
++	}
++
++	// incoming swing: arc towards the perfect block spot on the enemy
 +	const int move = enemy->client->ps.saber_move;
 +	if (!(PM_SaberInStart(move) || PM_SaberInAttack(move) || PM_SaberInTransition(move)))
 +	{
@@ -843,9 +871,26 @@ index 0000000..15c86a4
 +	{
 +		return;
 +	}
-+	mb2_hud_last_zone = incoming;
-+	vec4_t green = { 0.25f, 1.0f, 0.35f, PM_SaberInAttack(move) ? 1.0f : 0.7f };
-+	MB2_WheelArc(cx, cy, incoming.col, incoming.row, radius, thick, green);
++	const float alpha = PM_SaberInAttack(move) ? 1.0f : 0.8f;
++	vec4_t green = { 0.15f, 0.85f, 0.2f, alpha };
++
++	const mb2Zone_t aim = MB2_AimZone(player, enemy);
++	if (MB2_ZoneMatches(incoming, aim) && !mb2_input->integer)
++	{
++		// on target: the whole ring glows green
++		MB2_Arc(cx, cy, 0.0f, 2.0f * M_PI, radius, width, green);
++		return;
++	}
++
++	// target view offset for that zone (see MB2_AimZone), in degrees
++	const float t_yaw = -incoming.col * mb2_aim_yaw->value * 1.8f;
++	const float t_pitch = -incoming.row * mb2_aim_pitch->value * 1.8f;
++	// on screen: right = less yaw, up = less pitch
++	const float scr_right = -(t_yaw - d_yaw);
++	const float scr_up = -(t_pitch - d_pitch);
++	const float a = atan2f(scr_up, scr_right);
++	const float half = DEG2RAD(50.0f);
++	MB2_Arc(cx, cy, a - half, a + half, radius, width, green);
 +}
 +
 +// ---------------------------------------------------------------------------
