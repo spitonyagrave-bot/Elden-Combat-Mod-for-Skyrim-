@@ -103,7 +103,7 @@ index 3bbd3f3..41557d0 100644
  					}
 diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
 new file mode 100644
-index 0000000..b6e34ec
+index 0000000..64e7cf4
 --- /dev/null
 +++ b/code/game/wp_saber_mb2.cpp
 @@ -0,0 +1,804 @@
@@ -747,7 +747,7 @@ index 0000000..b6e34ec
 +	if (!mb2_wheel)
 +	{
 +		mb2_wheel = gi.cvar("g_MB2Wheel", "1", CVAR_ARCHIVE);
-+		mb2_wheel_size = gi.cvar("g_MB2WheelRadius", "14", CVAR_ARCHIVE);
++		mb2_wheel_size = gi.cvar("g_MB2WheelRadius", "24", CVAR_ARCHIVE);
 +	}
 +	if (!mb2_on->integer || !mb2_wheel->integer || g_SerenityJediEngineMode->integer != 2)
 +	{
