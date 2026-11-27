@@ -215,10 +215,10 @@ index 3bbd3f3..41557d0 100644
  					}
 diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
 new file mode 100644
-index 0000000..201ec5b
+index 0000000..b0e90ce
 --- /dev/null
 +++ b/code/game/wp_saber_mb2.cpp
-@@ -0,0 +1,1364 @@
+@@ -0,0 +1,1409 @@
 +/*
 +===========================================================================
 +MB2-style saber blocking layer for Movie Duels (SP).
@@ -789,18 +789,8 @@ index 0000000..201ec5b
 +	{
 +		mb2_swing_speed = gi.cvar("g_MB2SwingSpeed", "1", CVAR_ARCHIVE);
 +	}
-+	float f;
-+	switch (saber_anim_level)
-+	{
-+	case SS_FAST: f = 0.86f; break;   // blue
-+	case SS_TAVION: f = 0.88f; break; // cyan
-+	case SS_MEDIUM: f = 0.90f; break; // yellow
-+	case SS_DUAL: f = 0.93f; break;
-+	case SS_STAFF: f = 0.93f; break;
-+	case SS_DESANN: f = 1.0f; break; // purple
-+	case SS_STRONG: f = 1.12f; break; // red: a little faster than before
-+	default: f = 0.93f; break;
-+	}
++	float f = 1.0f; // Joel (v15): back to the standard Movie Duels Advanced tempo
++	(void)saber_anim_level;
 +	f *= mb2_swing_speed->value > 0.2f ? mb2_swing_speed->value : 1.0f;
 +	return f;
 +}
@@ -854,14 +844,53 @@ index 0000000..201ec5b
 +	return ent->s.number < MAX_CLIENTS || G_ControlledByPlayer(ent) ? qtrue : qfalse;
 +}
 +
++// Test log (v15): every block / body hit with the player involved is written
++// to mb2_log.txt in the MD folder, so we can see why NPCs do not block.
++// g_MB2Log 0 turns it off.
++static cvar_t* mb2_log;
++static fileHandle_t mb2_log_file;
++
++static void MB2_Log(const char* line)
++{
++	if (!mb2_log)
++	{
++		mb2_log = gi.cvar("g_MB2Log", "1", CVAR_ARCHIVE);
++	}
++	if (!mb2_log->integer)
++	{
++		return;
++	}
++	if (!mb2_log_file)
++	{
++		gi.FS_FOpenFile("mb2_log.txt", &mb2_log_file, FS_APPEND);
++		if (!mb2_log_file)
++		{
++			return;
++		}
++	}
++	const char* full = va("%8d %s\r\n", level.time, line);
++	gi.FS_Write(full, strlen(full), mb2_log_file);
++}
++
++static const char* MB2_Name(const gentity_t* ent)
++{
++	if (MB2_IsPlayer(ent))
++	{
++		return "PLAYER";
++	}
++	return ent->NPC_type ? ent->NPC_type : "npc";
++}
++
 +static void MB2_Debug(const gentity_t* blocker, const gentity_t* attacker, const char* what)
 +{
-+	if (mb2_debug->integer || d_blockinfo->integer)
++	if (MB2_IsPlayer(blocker) || MB2_IsPlayer(attacker))
 +	{
-+		if (MB2_IsPlayer(blocker) || MB2_IsPlayer(attacker))
++		if (mb2_debug->integer || d_blockinfo->integer)
 +		{
 +			gi.Printf(S_COLOR_GREEN "MB2: %s (BP %d)\n", what, blocker->client->ps.blockPoints);
 +		}
++		MB2_Log(va("%s <- %s: %s (BP %d, HP %d)", MB2_Name(blocker), MB2_Name(attacker), what,
++			blocker->client->ps.blockPoints, blocker->health));
 +	}
 +}
 +
@@ -1134,6 +1163,7 @@ index 0000000..201ec5b
 +	if (!npc_blocking && !(blocker->client->ps.ManualBlockingFlags & 1 << HOLDINGBLOCK)
 +		&& !PM_SaberInParry(blocker->client->ps.saber_move))
 +	{
++		MB2_Debug(blocker, attacker, "NPC not in block state - Movie Duels rules");
 +		return qfalse; // NPC was not defending: MD rules
 +	}
 +
@@ -1546,11 +1576,26 @@ index 0000000..201ec5b
 +		return damage; // not a real swing
 +	}
 +	MB2_GuardRecover(const_cast<gentity_t*>(victim));
++	if (MB2_IsPlayer(attacker) || MB2_IsPlayer(victim))
++	{
++		const playerState_t* vps = &victim->client->ps;
++		MB2_Log(va("BODYHIT %s <- %s: dmg %d, npcblock %d, holdblock %d, parry %d, air %d, arc %d, open %d, saber %d, move %d, BP %d, HP %d",
++			MB2_Name(victim), MB2_Name(attacker), damage,
++			vps->ManualBlockingFlags & 1 << MBF_NPCBLOCKING ? 1 : 0,
++			vps->ManualBlockingFlags & 1 << HOLDINGBLOCK ? 1 : 0,
++			PM_SaberInParry(vps->saber_move) ? 1 : 0,
++			vps->groundEntityNum == ENTITYNUM_NONE ? 1 : 0,
++			MB2_InBlockArc(victim, attacker) ? 1 : 0,
++			MB2_GuardOpen(victim) ? 1 : 0,
++			vps->saberInFlight ? 0 : 1,
++			vps->saber_move, vps->blockPoints, victim->health));
++	}
 +	if (victim->client->ps.ManualBlockingFlags & (1 << HOLDINGBLOCK | 1 << MBF_NPCBLOCKING)
 +		&& victim->client->ps.blockPoints > 0
 +		&& !MB2_GuardOpen(victim)
 +		&& MB2_InBlockArc(victim, attacker))
 +	{
++		MB2_Debug(victim, attacker, va("body hit while blocking - MD damage %d", damage));
 +		return damage; // blocking from the front with block points left: normal MD damage
 +	}
 +	if (MB2_NPCGuarding(victim) && !MB2_GuardOpen(victim) && MB2_InBlockArc(victim, attacker))
