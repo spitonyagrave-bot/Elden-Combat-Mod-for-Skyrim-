@@ -1,9 +1,9 @@
-name: Movie Duels MB2 build
+name: Movie Duels MB2 build (Update 8)
 
 on:
   push:
-    branches: [ "claude/project-thread-ozla21" ]
-    paths: [ "movie-duels-mb2/**", ".github/workflows/md-mb2.yml" ]
+    branches: [ "claude/project-thread-mo633i" ]
+    paths: [ "movie-duels-mb2/mb2-u8.patch", ".github/workflows/md-mb2.yml" ]
   workflow_dispatch:
 
 permissions:
@@ -15,12 +15,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Get Movie Duels source (Update 7)
+      - name: Get Movie Duels source (Update 8 = 2ee6492, build Day-11.Month-11.Year-26.BuildNum-09)
         shell: bash
         run: |
           git clone -c core.autocrlf=false https://github.com/MovieDuels/MovieDuels-SJE-SP-Rend2.git md
           cd md
-          git checkout 9091577
+          git checkout 2ee6492
 
       - name: Configure
         shell: bash
@@ -36,20 +36,20 @@ jobs:
       - name: Apply MB2 patch and build
         shell: bash
         run: |
-          cd md && git apply --whitespace=nowarn ../movie-duels-mb2/mb2.patch && cd ..
+          cd md && git apply --whitespace=nowarn ../movie-duels-mb2/mb2-u8.patch && cd ..
           cmake -S md -B mdbuild -G "Visual Studio 17 2022" -A x64 -DBuildSPEngine=OFF -DBuildSPRdVanilla=OFF -DBuildSPRend2=OFF
           cmake --build mdbuild --config Release --target MovieDuels-gamex86_64 --parallel
 
       - name: Store DLL in the branch
         shell: bash
         run: |
-          mkdir -p movie-duels-mb2/build
+          mkdir -p movie-duels-mb2/build-u8
           f=$(find mdbuild -name "MovieDuels-gamex86_64.dll" | head -1)
           echo "built: $f"
-          cp "$f" movie-duels-mb2/build/
+          cp "$f" movie-duels-mb2/build-u8/
+          cp check/unmodified.dll movie-duels-mb2/build-u8/unmodified-check.dll
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
-          cp check/unmodified.dll movie-duels-mb2/build/unmodified-check.dll
-          git add movie-duels-mb2/build/MovieDuels-gamex86_64.dll movie-duels-mb2/build/unmodified-check.dll
-          git commit -m "Build MovieDuels-gamex86_64.dll [skip ci]"
+          git add movie-duels-mb2/build-u8/MovieDuels-gamex86_64.dll movie-duels-mb2/build-u8/unmodified-check.dll
+          git commit -m "Build MovieDuels-gamex86_64.dll for Update 8 [skip ci]"
           git push
