@@ -215,10 +215,10 @@ index 3bbd3f3..41557d0 100644
  					}
 diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
 new file mode 100644
-index 0000000..a9a5da8
+index 0000000..201ec5b
 --- /dev/null
 +++ b/code/game/wp_saber_mb2.cpp
-@@ -0,0 +1,1348 @@
+@@ -0,0 +1,1364 @@
 +/*
 +===========================================================================
 +MB2-style saber blocking layer for Movie Duels (SP).
@@ -942,7 +942,7 @@ index 0000000..a9a5da8
 +
 +// Guard broken (no block points).
 +// g_MB2GuardBreak 1 (default, epic fights): the swing is still stopped, but
-+// the defender staggers and is open for a moment; a hit in that window
++// the defender loses the saber (see MB2_KnockSaberAway); a hit in that window
 +// kills. Afterwards the guard comes back with some block points.
 +// g_MB2GuardBreak 0: hard MB2 - the swing goes on and the body hit kills.
 +static int mb2_guard_open_until[MAX_GENTITIES];
@@ -967,6 +967,24 @@ index 0000000..a9a5da8
 +	}
 +}
 +
++// Joel (v14): at 0 block points the saber flies out of the hand; the next
++// hit kills. Sabers that cannot be disarmed: a stagger instead. Open for 3 s
++// (about the time to get the saber back), then the guard returns.
++static void MB2_KnockSaberAway(gentity_t* ent)
++{
++	mb2_guard_open_until[ent->s.number] = level.time + 3000;
++	if (!ent->client->ps.saberInFlight
++		&& !(ent->client->ps.saber[0].saberFlags & SFL_NOT_DISARMABLE)
++		&& !in_camera)
++	{
++		SabBeh_SaberShouldBeDisarmedBlocker(ent, 0);
++	}
++	else
++	{
++		G_Stagger(ent);
++	}
++}
++
 +static qboolean MB2_GuardBroken(gentity_t* blocker, gentity_t* attacker, const int saber_num, const int blade_num)
 +{
 +	blocker->client->ps.blockPoints = 0;
@@ -978,10 +996,9 @@ index 0000000..a9a5da8
 +	{
 +		return qtrue; // hard rule, or already open: the swing goes through
 +	}
-+	mb2_guard_open_until[blocker->s.number] = level.time + 1200;
 +	MB2_MarkBlocked(blocker, attacker, saber_num, blade_num); // this swing is still stopped
-+	G_Stagger(blocker);
-+	MB2_Debug(blocker, attacker, "guard broken - staggered, open for 1.2 s");
++	MB2_KnockSaberAway(blocker);
++	MB2_Debug(blocker, attacker, "guard broken - saber knocked away, next hit kills");
 +	return qtrue;
 +}
 +
@@ -1553,9 +1570,8 @@ index 0000000..a9a5da8
 +		victim->client->ps.blockPoints = 0;
 +		if (!mb2_guard_break || mb2_guard_break->integer)
 +		{
-+			// epic mode: guard breaks into a stagger instead of dying
-+			mb2_guard_open_until[victim->s.number] = level.time + 1200;
-+			G_Stagger(const_cast<gentity_t*>(victim));
++			// guard breaks: saber knocked away instead of dying
++			MB2_KnockSaberAway(const_cast<gentity_t*>(victim));
 +			return damage;
 +		}
 +	}
