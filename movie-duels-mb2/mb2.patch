@@ -178,10 +178,10 @@ index 3bbd3f3..41557d0 100644
  					}
 diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
 new file mode 100644
-index 0000000..65f3c25
+index 0000000..220515e
 --- /dev/null
 +++ b/code/game/wp_saber_mb2.cpp
-@@ -0,0 +1,1259 @@
+@@ -0,0 +1,1280 @@
 +/*
 +===========================================================================
 +MB2-style saber blocking layer for Movie Duels (SP).
@@ -434,6 +434,8 @@ index 0000000..65f3c25
 +};
 +static mb2Field_t mb2_aim_field[MAX_GENTITIES];
 +static int mb2_aim_field_time[MAX_GENTITIES];
++static mb2Field_t mb2_aim_pending[MAX_GENTITIES];
++static int mb2_aim_pending_since[MAX_GENTITIES];
 +
 +static mb2Field_t MB2_AimField(const gentity_t* blocker, const gentity_t* attacker)
 +{
@@ -461,12 +463,31 @@ index 0000000..65f3c25
 +		f.side = ox < 0.0f ? -1 : 1;
 +		f.height = oy < 0.0f ? -1 : 1;
 +	}
-+	// switch only when clearly over the border (hysteresis)
-+	const float hyst = 0.15f;
-+	if (f.side == 1 && ox < -hyst) f.side = -1;
-+	else if (f.side == -1 && ox > hyst) f.side = 1;
-+	if (f.height == 1 && oy < -hyst) f.height = -1;
-+	else if (f.height == -1 && oy > hyst) f.height = 1;
++	// switch only when clearly over the border (hysteresis) and only after
++	// the new field was held for a moment, so it is calm to look at
++	const float hyst = 0.25f;
++	mb2Field_t want = f;
++	if (f.side == 1 && ox < -hyst) want.side = -1;
++	else if (f.side == -1 && ox > hyst) want.side = 1;
++	if (f.height == 1 && oy < -hyst) want.height = -1;
++	else if (f.height == -1 && oy > hyst) want.height = 1;
++	if (want.side != f.side || want.height != f.height)
++	{
++		if (!mb2_aim_pending_since[n] || mb2_aim_pending[n].side != want.side || mb2_aim_pending[n].height != want.height)
++		{
++			mb2_aim_pending[n] = want;
++			mb2_aim_pending_since[n] = level.time;
++		}
++		else if (level.time - mb2_aim_pending_since[n] >= 150)
++		{
++			f = want;
++			mb2_aim_pending_since[n] = 0;
++		}
++	}
++	else
++	{
++		mb2_aim_pending_since[n] = 0;
++	}
 +	mb2_aim_field[n] = f;
 +	mb2_aim_field_time[n] = level.time;
 +	return f;
@@ -1111,11 +1132,11 @@ index 0000000..65f3c25
 +	const float width, const float* color)
 +{
 +	const float dot = 1.2f;
-+	const int bands = width > dot ? static_cast<int>(width / (dot * 0.8f)) + 1 : 1;
++	const int bands = width > dot ? static_cast<int>(width / (dot * 0.5f)) + 1 : 1;
 +	for (int b = 0; b < bands; b++)
 +	{
 +		const float r = bands > 1 ? radius - width * 0.5f + width * b / (bands - 1) : radius;
-+		const int steps = static_cast<int>(fabsf(a1 - a0) * r / (dot * 0.7f)) + 2;
++		const int steps = static_cast<int>(fabsf(a1 - a0) * r / (dot * 0.4f)) + 2; // dense, so it looks like a solid line
 +		for (int i = 0; i < steps; i++)
 +		{
 +			const float a = a0 + (a1 - a0) * i / (steps - 1);
@@ -1136,7 +1157,7 @@ index 0000000..65f3c25
 +	if (!mb2_wheel)
 +	{
 +		mb2_wheel = gi.cvar("g_MB2Wheel", "1", CVAR_ARCHIVE);
-+		mb2_wheel_size = gi.cvar("g_MB2IndicatorGap", "3", CVAR_ARCHIVE); // ring distance from the crosshair edge
++		mb2_wheel_size = gi.cvar("g_MB2IndicatorGap", "4", CVAR_ARCHIVE); // ring distance from the crosshair edge
 +		mb2_hint = gi.cvar("g_MB2IncomingHint", "1", CVAR_ARCHIVE); // orange field = where the swing comes from
 +	}
 +	if (!mb2_on->integer || !mb2_wheel->integer || g_SerenityJediEngineMode->integer != 2)
@@ -1176,18 +1197,18 @@ index 0000000..65f3c25
 +	const float cx = wheel_x;
 +	const float cy = wheel_y;
 +	float radius = crosshair_size * 0.5f + mb2_wheel_size->value;
-+	if (radius < 9.0f)
++	if (radius < 12.0f)
 +	{
-+		radius = 9.0f;
++		radius = 12.0f; // like the preview: small ring close around the crosshair
 +	}
-+	const float width = 3.6f;
++	const float width = 2.6f; // fine bars, not too thin
 +
 +	// dark ring
 +	vec4_t dark = { 0.0f, 0.0f, 0.0f, 0.4f };
 +	for (int f = 0; f < 4; f++)
 +	{
 +		const float fa = DEG2RAD(45.0f + 90.0f * f);
-+		MB2_Arc(cx, cy, fa - DEG2RAD(35.0f), fa + DEG2RAD(35.0f), radius, width, dark);
++		MB2_Arc(cx, cy, fa - DEG2RAD(25.0f), fa + DEG2RAD(25.0f), radius, width, dark);
 +	}
 +
 +	// flash after a block result (MB2 colours)
@@ -1218,7 +1239,7 @@ index 0000000..65f3c25
 +	if (flash[3] > 0.0f)
 +	{
 +		// thin outer ring, so the fields stay readable underneath
-+		MB2_Arc(cx, cy, 0.0f, 2.0f * M_PI, radius + width + 1.5f, 1.8f, flash);
++		MB2_Arc(cx, cy, 0.0f, 2.0f * M_PI, radius + width + 1.2f, 1.2f, flash);
 +	}
 +
 +	// 4 fixed fields: up-left, down-left, up-right, down-right
@@ -1245,7 +1266,7 @@ index 0000000..65f3c25
 +	const float inc_alpha = inc_age < 600 ? 1.0f : 1.0f - (inc_age - 600) / 300.0f;
 +	const int res = inc_on && use_aim ? MB2_FieldResult(mb2_hud_inc_zone, aim) : 0;
 +
-+	const float half = DEG2RAD(35.0f);
++	const float half = DEG2RAD(25.0f); // short bars like the preview
 +	for (int f = 0; f < 4; f++)
 +	{
 +		const float a = DEG2RAD(45.0f + 90.0f * f);
@@ -1274,7 +1295,7 @@ index 0000000..65f3c25
 +		{
 +			continue;
 +		}
-+		MB2_Arc(cx, cy, a - half, a + half, radius, width + (is_inc ? 1.0f : 0.0f), col);
++		MB2_Arc(cx, cy, a - half, a + half, radius, width + (is_inc ? 0.6f : 0.0f), col);
 +	}
 +}
 +
