@@ -178,10 +178,10 @@ index 3bbd3f3..41557d0 100644
  					}
 diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
 new file mode 100644
-index 0000000..1192333
+index 0000000..2cec1ed
 --- /dev/null
 +++ b/code/game/wp_saber_mb2.cpp
-@@ -0,0 +1,1117 @@
+@@ -0,0 +1,1178 @@
 +/*
 +===========================================================================
 +MB2-style saber blocking layer for Movie Duels (SP).
@@ -403,6 +403,22 @@ index 0000000..1192333
 +	return MB2_AngDiff(aim_deg, MB2_IncomingDeg(inc)) <= reach ? qtrue : qfalse;
 +}
 +
++// Semi block (old MB2 "semi-perfect block"): aimed one zone next to the
++// right one. Still a normal block, but it only costs half the block points.
++static qboolean MB2_AimSemi(const mb2Zone_t& inc, const float aim_deg)
++{
++	if (!inc.col && !inc.row)
++	{
++		return qfalse;
++	}
++	const float reach = 22.5f + MB2_Overlap() + 45.0f;
++	if (inc.col == 0 && inc.row == -1)
++	{
++		return MB2_AngDiff(aim_deg, 225.0f) <= reach || MB2_AngDiff(aim_deg, 315.0f) <= reach ? qtrue : qfalse;
++	}
++	return MB2_AngDiff(aim_deg, MB2_IncomingDeg(inc)) <= reach ? qtrue : qfalse;
++}
++
 +// Does the incoming swing belong to field i (for the indicator)?
 +static qboolean MB2_IncomingIsField(const mb2Zone_t& inc, const int i)
 +{
@@ -562,6 +578,23 @@ index 0000000..1192333
 +	return chance;
 +}
 +
++// Chance (of the swings that were not perfect blocked) to at least semi block.
++static int MB2_NPCSemiChance(const gentity_t* npc)
++{
++	int chance;
++	switch (g_spskill->integer)
++	{
++	case 0: chance = 30; break;
++	case 1: chance = 45; break;
++	default: chance = 60; break;
++	}
++	if (npc->NPC && npc->NPC->rank >= RANK_CAPTAIN)
++	{
++		chance += 15;
++	}
++	return chance;
++}
++
 +// ---------------------------------------------------------------------------
 +// MB2 swing tempo: every style swings a bit slower so the direction can be
 +// read by eye (Joel: red was readable but too slow, the rest too fast).
@@ -631,7 +664,8 @@ index 0000000..1192333
 +static int mb2_hud_disarm_time;  // player's last MBlock disarm (wheel flashes blue, like MB2)
 +static int mb2_hud_mbdef_time;   // player's last MB defense: keys right, aim wrong (wheel flashes yellow)
 +static int mb2_hud_hit_time;     // saber body hit by or on the player (ring flashes red, MB2 hit effect)
-+static int mb2_hud_clash_time;   // saber hit saber, player involved (ring flashes yellow, MB2 hit effect)
++static int mb2_hud_clash_time;
++static int mb2_hud_semi_time;     // player's last semi block (ring flashes light yellow)
 +
 +static qboolean MB2_IsPlayer(const gentity_t* ent);
 +
@@ -810,6 +844,7 @@ index 0000000..1192333
 +	{
 +		// 2. Player: aim (or keys) decides perfect block
 +		qboolean perfect;
++		qboolean semi = qfalse;
 +		if (mb2_input->integer)
 +		{
 +			perfect = MB2_ZoneMatches(incoming, MB2_KeyZone(blocker));
@@ -817,7 +852,9 @@ index 0000000..1192333
 +		else
 +		{
 +			float aim_deg;
-+			perfect = MB2_AimAngle(blocker, attacker, &aim_deg) && MB2_AimMatches(incoming, aim_deg) ? qtrue : qfalse;
++			const qboolean has_aim = MB2_AimAngle(blocker, attacker, &aim_deg);
++			perfect = has_aim && MB2_AimMatches(incoming, aim_deg) ? qtrue : qfalse;
++			semi = !perfect && has_aim && MB2_AimSemi(incoming, aim_deg) ? qtrue : qfalse;
 +		}
 +
 +		// 3. MBlock: tapped attack while blocking, right before the hit
@@ -857,6 +894,15 @@ index 0000000..1192333
 +			MB2_PerfectBlockEffects(blocker, attacker, hit_loc, saber_num, blade_num);
 +			MB2_Debug(blocker, attacker, "PERFECT BLOCK");
 +		}
++		else if (semi)
++		{
++			mb2_hud_semi_time = level.time;
++			MB2_Debug(blocker, attacker, "semi block (half cost)");
++			if (!MB2_NormalBlock(blocker, attacker, hit_loc, saber_num, blade_num, 0.5f))
++			{
++				return MB2_GuardBroken(blocker);
++			}
++		}
 +		else if (!MB2_NormalBlock(blocker, attacker, hit_loc, saber_num, blade_num))
 +		{
 +			return MB2_GuardBroken(blocker);
@@ -890,6 +936,12 @@ index 0000000..1192333
 +		return qtrue;
 +	}
 +
++	// NPC semi block: saw the swing but aimed a zone off -> half cost
++	if (saw_it && Q_irand(0, 99) < MB2_NPCSemiChance(blocker))
++	{
++		MB2_Debug(blocker, attacker, "NPC semi block (half cost)");
++		return MB2_NormalBlock(blocker, attacker, hit_loc, saber_num, blade_num, 0.5f) ? qtrue : MB2_GuardBroken(blocker);
++	}
 +	if (!MB2_NormalBlock(blocker, attacker, hit_loc, saber_num, blade_num))
 +	{
 +		return MB2_GuardBroken(blocker);
@@ -1067,6 +1119,10 @@ index 0000000..1192333
 +	{
 +		MB2_SetColor(flash, 0.5f, 1.0f, 0.5f, 1.0f - since_perfect / 300.0f); // green = perfect block
 +	}
++	else if (mb2_hud_semi_time && level.time - mb2_hud_semi_time >= 0 && level.time - mb2_hud_semi_time < 300)
++	{
++		MB2_SetColor(flash, 0.85f, 1.0f, 0.3f, 1.0f - (level.time - mb2_hud_semi_time) / 300.0f); // yellow-green = semi block
++	}
 +	else if (mb2_hud_mbdef_time && since_mbdef >= 0 && since_mbdef < 300)
 +	{
 +		MB2_SetColor(flash, 1.0f, 0.85f, 0.1f, 1.0f - since_mbdef / 300.0f); // yellow = MB defense
@@ -1108,6 +1164,7 @@ index 0000000..1192333
 +		&& (mb2_hud_inc_zone.col || mb2_hud_inc_zone.row) ? qtrue : qfalse;
 +	const float inc_alpha = inc_age < 600 ? 1.0f : 1.0f - (inc_age - 600) / 300.0f;
 +	const qboolean ready = inc_on && has_aim && MB2_AimMatches(mb2_hud_inc_zone, aim_deg) ? qtrue : qfalse;
++	const qboolean semi_ready = !ready && inc_on && has_aim && MB2_AimSemi(mb2_hud_inc_zone, aim_deg) ? qtrue : qfalse;
 +
 +	const float half = DEG2RAD(17.0f);
 +	for (int i = 0; i < 7; i++)
@@ -1119,6 +1176,10 @@ index 0000000..1192333
 +		if (is_inc && ready)
 +		{
 +			MB2_SetColor(col, 0.2f, 1.0f, 0.3f, inc_alpha); // green: your aim matches, perfect block ready
++		}
++		else if (is_inc && semi_ready)
++		{
++			MB2_SetColor(col, 1.0f, 0.9f, 0.1f, inc_alpha); // yellow: one zone off, semi block (half cost)
 +		}
 +		else if (is_inc && mb2_hint->integer)
 +		{
