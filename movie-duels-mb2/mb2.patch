@@ -107,6 +107,43 @@ index 71d9e2c..4b8e77a 100644
  	//======================================================================
  	// 1. Base JKA speeds for all modes
  	//======================================================================
+diff --git a/code/game/bg_pmove.cpp b/code/game/bg_pmove.cpp
+index dd03d8e..61159ee 100644
+--- a/code/game/bg_pmove.cpp
++++ b/code/game/bg_pmove.cpp
+@@ -18982,6 +18982,8 @@ While this is a little different than the Quake 3 code, there is no clean way of
+ // Ultimate goal is to set the sabermove to the proper next location
+ // Note that if the resultant animation is NONE, then the animation is essentially "idle", and is set in WP_TorsoAnim
+ 
++extern qboolean MB2_TapFeint();
++
+ int pm_returnfor_quad(const int quad)
+ {
+ 	switch (quad)
+@@ -20002,6 +20004,11 @@ static void PM_WeaponLightsaber()
+ 						//NPCs never do attack fakes, just follow thru with attack.
+ 						newmove = LS_A_TL2BR + (curmove - LS_S_TL2BR);
+ 					}
++					else if (!MB2_TapFeint())
++					{
++						//MB2 combat: a click always plays the full swing
++						newmove = LS_A_TL2BR + (curmove - LS_S_TL2BR);
++					}
+ 					else
+ 					{
+ 						//perform attack fake
+@@ -20028,6 +20035,11 @@ static void PM_WeaponLightsaber()
+ 						//NPCs never stop attacking mid-attack, just follow thru with attack.
+ 						newmove = saber_moveData[curmove].chain_attack;
+ 					}
++					else if (!MB2_TapFeint())
++					{
++						//MB2 combat: finish the chained swing
++						newmove = saber_moveData[curmove].chain_attack;
++					}
+ 					else
+ 					{
+ 						//exit out of transition without attacking
 diff --git a/code/game/wp_saber.cpp b/code/game/wp_saber.cpp
 index 3bbd3f3..41557d0 100644
 --- a/code/game/wp_saber.cpp
@@ -178,10 +215,10 @@ index 3bbd3f3..41557d0 100644
  					}
 diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
 new file mode 100644
-index 0000000..220515e
+index 0000000..a9a5da8
 --- /dev/null
 +++ b/code/game/wp_saber_mb2.cpp
-@@ -0,0 +1,1280 @@
+@@ -0,0 +1,1348 @@
 +/*
 +===========================================================================
 +MB2-style saber blocking layer for Movie Duels (SP).
@@ -701,6 +738,23 @@ index 0000000..220515e
 +	return chance;
 +}
 +
++// Movie Duels' tap-attack feint (release attack during the wind-up). Off
++// with MB2 combat: one click = full swing. g_MB2TapFeint 1 brings it back.
++qboolean MB2_TapFeint()
++{
++	MB2_RegisterCvars();
++	if (!mb2_on->integer || g_SerenityJediEngineMode->integer != 2)
++	{
++		return qtrue; // Movie Duels behaviour
++	}
++	static cvar_t* tap = nullptr;
++	if (!tap)
++	{
++		tap = gi.cvar("g_MB2TapFeint", "0", CVAR_ARCHIVE);
++	}
++	return tap->integer ? qtrue : qfalse;
++}
++
 +// ---------------------------------------------------------------------------
 +// MB2 swing tempo: every style swings a bit slower so the direction can be
 +// read by eye (Joel: red was readable but too slow, the rest too fast).
@@ -886,11 +940,48 @@ index 0000000..220515e
 +	return qtrue;
 +}
 +
-+// Guard broken (no block points): no parry at all, the swing goes on and the
-+// body hit kills (see MB2_BodyHitDamage).
-+static qboolean MB2_GuardBroken(gentity_t* blocker)
++// Guard broken (no block points).
++// g_MB2GuardBreak 1 (default, epic fights): the swing is still stopped, but
++// the defender staggers and is open for a moment; a hit in that window
++// kills. Afterwards the guard comes back with some block points.
++// g_MB2GuardBreak 0: hard MB2 - the swing goes on and the body hit kills.
++static int mb2_guard_open_until[MAX_GENTITIES];
++static cvar_t* mb2_guard_break;
++
++static qboolean MB2_GuardOpen(const gentity_t* ent)
++{
++	return level.time < mb2_guard_open_until[ent->s.number] ? qtrue : qfalse;
++}
++
++// after the open window: guard back with 30 block points
++static void MB2_GuardRecover(gentity_t* ent)
++{
++	const int n = ent->s.number;
++	if (mb2_guard_open_until[n] && level.time >= mb2_guard_open_until[n])
++	{
++		mb2_guard_open_until[n] = 0;
++		if (ent->client && ent->client->ps.blockPoints < 30)
++		{
++			ent->client->ps.blockPoints = 30;
++		}
++	}
++}
++
++static qboolean MB2_GuardBroken(gentity_t* blocker, gentity_t* attacker, const int saber_num, const int blade_num)
 +{
 +	blocker->client->ps.blockPoints = 0;
++	if (!mb2_guard_break)
++	{
++		mb2_guard_break = gi.cvar("g_MB2GuardBreak", "1", CVAR_ARCHIVE);
++	}
++	if (!mb2_guard_break->integer || MB2_GuardOpen(blocker))
++	{
++		return qtrue; // hard rule, or already open: the swing goes through
++	}
++	mb2_guard_open_until[blocker->s.number] = level.time + 1200;
++	MB2_MarkBlocked(blocker, attacker, saber_num, blade_num); // this swing is still stopped
++	G_Stagger(blocker);
++	MB2_Debug(blocker, attacker, "guard broken - staggered, open for 1.2 s");
 +	return qtrue;
 +}
 +
@@ -918,6 +1009,13 @@ index 0000000..220515e
 +	if (pm_saber_innonblockable_attack(attacker->client->ps.torsoAnim))
 +	{
 +		return qfalse; // special unblockable moves keep their MD behaviour
++	}
++
++	MB2_GuardRecover(blocker);
++	if (MB2_GuardOpen(blocker))
++	{
++		MB2_Debug(blocker, attacker, "guard open - hit goes through");
++		return qtrue; // staggered: no block, the swing reaches the body
 +	}
 +
 +	const qboolean player_blocker = MB2_IsPlayer(blocker);
@@ -989,7 +1087,7 @@ index 0000000..220515e
 +				// MB defense: timing and keys right, aim wrong -> half block cost (MB2, yellow)
 +				mb2_hud_mbdef_time = level.time;
 +				MB2_Debug(blocker, attacker, "MB defense (half cost)");
-+				return MB2_NormalBlock(blocker, attacker, hit_loc, saber_num, blade_num, 0.5f) ? qtrue : MB2_GuardBroken(blocker);
++				return MB2_NormalBlock(blocker, attacker, hit_loc, saber_num, blade_num, 0.5f) ? qtrue : MB2_GuardBroken(blocker, attacker, saber_num, blade_num);
 +			}
 +			// failed MBlock: no penalty since MB2 R21
 +		}
@@ -1005,12 +1103,12 @@ index 0000000..220515e
 +			MB2_Debug(blocker, attacker, "semi block (half cost)");
 +			if (!MB2_NormalBlock(blocker, attacker, hit_loc, saber_num, blade_num, 0.5f))
 +			{
-+				return MB2_GuardBroken(blocker);
++				return MB2_GuardBroken(blocker, attacker, saber_num, blade_num);
 +			}
 +		}
 +		else if (!MB2_NormalBlock(blocker, attacker, hit_loc, saber_num, blade_num))
 +		{
-+			return MB2_GuardBroken(blocker);
++			return MB2_GuardBroken(blocker, attacker, saber_num, blade_num);
 +		}
 +		return qtrue;
 +	}
@@ -1045,11 +1143,11 @@ index 0000000..220515e
 +	if (saw_it && Q_irand(0, 99) < MB2_NPCSemiChance(blocker))
 +	{
 +		MB2_Debug(blocker, attacker, "NPC semi block (half cost)");
-+		return MB2_NormalBlock(blocker, attacker, hit_loc, saber_num, blade_num, 0.5f) ? qtrue : MB2_GuardBroken(blocker);
++		return MB2_NormalBlock(blocker, attacker, hit_loc, saber_num, blade_num, 0.5f) ? qtrue : MB2_GuardBroken(blocker, attacker, saber_num, blade_num);
 +	}
 +	if (!MB2_NormalBlock(blocker, attacker, hit_loc, saber_num, blade_num))
 +	{
-+		return MB2_GuardBroken(blocker);
++		return MB2_GuardBroken(blocker, attacker, saber_num, blade_num);
 +	}
 +	return qtrue;
 +}
@@ -1131,7 +1229,7 @@ index 0000000..220515e
 +static void MB2_Arc(const float cx, const float cy, const float a0, const float a1, const float radius,
 +	const float width, const float* color)
 +{
-+	const float dot = 1.2f;
++	const float dot = 0.7f;
 +	const int bands = width > dot ? static_cast<int>(width / (dot * 0.5f)) + 1 : 1;
 +	for (int b = 0; b < bands; b++)
 +	{
@@ -1151,13 +1249,13 @@ index 0000000..220515e
 +{
 +	// Stretched exactly like the Movie Duels crosshair (which is not aspect
 +	// corrected), so the ring always sits evenly around it.
-+	(void)aspect;
-+	aspect_fix = 1.0f;
++	// round on widescreen (Joel: the stretched ring looked too thick/wide)
++	aspect_fix = aspect > 0.3f && aspect <= 1.0f ? aspect : 1.0f;
 +	MB2_RegisterCvars();
 +	if (!mb2_wheel)
 +	{
 +		mb2_wheel = gi.cvar("g_MB2Wheel", "1", CVAR_ARCHIVE);
-+		mb2_wheel_size = gi.cvar("g_MB2IndicatorGap", "4", CVAR_ARCHIVE); // ring distance from the crosshair edge
++		mb2_wheel_size = gi.cvar("g_MB2IndicatorSize", "11", CVAR_ARCHIVE); // ring radius (virtual 640x480 pixels)
 +		mb2_hint = gi.cvar("g_MB2IncomingHint", "1", CVAR_ARCHIVE); // orange field = where the swing comes from
 +	}
 +	if (!mb2_on->integer || !mb2_wheel->integer || g_SerenityJediEngineMode->integer != 2)
@@ -1196,12 +1294,10 @@ index 0000000..220515e
 +
 +	const float cx = wheel_x;
 +	const float cy = wheel_y;
-+	float radius = crosshair_size * 0.5f + mb2_wheel_size->value;
-+	if (radius < 12.0f)
-+	{
-+		radius = 12.0f; // like the preview: small ring close around the crosshair
-+	}
-+	const float width = 2.6f; // fine bars, not too thin
++	// fixed small size (not tied to the crosshair size, which can be big)
++	(void)crosshair_size;
++	const float radius = mb2_wheel_size->value > 4.0f ? mb2_wheel_size->value : 11.0f;
++	const float width = 1.4f; // fine bars
 +
 +	// dark ring
 +	vec4_t dark = { 0.0f, 0.0f, 0.0f, 0.4f };
@@ -1239,7 +1335,7 @@ index 0000000..220515e
 +	if (flash[3] > 0.0f)
 +	{
 +		// thin outer ring, so the fields stay readable underneath
-+		MB2_Arc(cx, cy, 0.0f, 2.0f * M_PI, radius + width + 1.2f, 1.2f, flash);
++		MB2_Arc(cx, cy, 0.0f, 2.0f * M_PI, radius + width + 1.0f, 0.9f, flash);
 +	}
 +
 +	// 4 fixed fields: up-left, down-left, up-right, down-right
@@ -1295,7 +1391,7 @@ index 0000000..220515e
 +		{
 +			continue;
 +		}
-+		MB2_Arc(cx, cy, a - half, a + half, radius, width + (is_inc ? 0.6f : 0.0f), col);
++		MB2_Arc(cx, cy, a - half, a + half, radius, width + (is_inc ? 0.4f : 0.0f), col);
 +	}
 +}
 +
@@ -1432,13 +1528,15 @@ index 0000000..220515e
 +	{
 +		return damage; // not a real swing
 +	}
++	MB2_GuardRecover(const_cast<gentity_t*>(victim));
 +	if (victim->client->ps.ManualBlockingFlags & (1 << HOLDINGBLOCK | 1 << MBF_NPCBLOCKING)
 +		&& victim->client->ps.blockPoints > 0
++		&& !MB2_GuardOpen(victim)
 +		&& MB2_InBlockArc(victim, attacker))
 +	{
 +		return damage; // blocking from the front with block points left: normal MD damage
 +	}
-+	if (MB2_NPCGuarding(victim) && MB2_InBlockArc(victim, attacker))
++	if (MB2_NPCGuarding(victim) && !MB2_GuardOpen(victim) && MB2_InBlockArc(victim, attacker))
 +	{
 +		// NPC was jumping, rolling or swinging: like MB2 the guard still holds,
 +		// but it costs block points (x1.3 in the air) instead of killing.
@@ -1452,7 +1550,14 @@ index 0000000..220515e
 +			}
 +			return damage;
 +		}
-+		victim->client->ps.blockPoints = 0; // guard broken: this hit kills
++		victim->client->ps.blockPoints = 0;
++		if (!mb2_guard_break || mb2_guard_break->integer)
++		{
++			// epic mode: guard breaks into a stagger instead of dying
++			mb2_guard_open_until[victim->s.number] = level.time + 1200;
++			G_Stagger(const_cast<gentity_t*>(victim));
++			return damage;
++		}
 +	}
 +	*d_flags &= ~DAMAGE_NO_KILL;
 +	const int lethal = victim->health + victim->client->ps.stats[STAT_ARMOR] + 10;
