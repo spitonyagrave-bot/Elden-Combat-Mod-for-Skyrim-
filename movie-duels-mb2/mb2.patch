@@ -178,10 +178,10 @@ index 3bbd3f3..41557d0 100644
  					}
 diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
 new file mode 100644
-index 0000000..dabdda0
+index 0000000..65f3c25
 --- /dev/null
 +++ b/code/game/wp_saber_mb2.cpp
-@@ -0,0 +1,1178 @@
+@@ -0,0 +1,1259 @@
 +/*
 +===========================================================================
 +MB2-style saber blocking layer for Movie Duels (SP).
@@ -419,6 +419,91 @@ index 0000000..dabdda0
 +	return MB2_AngDiff(aim_deg, MB2_IncomingDeg(inc)) <= reach ? qtrue : qfalse;
 +}
 +
++// ---------------------------------------------------------------------------
++// 4 fields (Joel, v13): up-left, down-left, up-right, down-right.
++// Field = (side, height): side -1 left / 1 right, height 1 up / -1 down.
++// A swing from the left counts for both left fields, from above for both
++// upper fields (like MB2's overlaps). Diagonal swings need their own field;
++// the other field on the same side is a semi block (half cost).
++// The aim uses hysteresis so the field does not flicker at the borders.
++// ---------------------------------------------------------------------------
++struct mb2Field_t
++{
++	int side;
++	int height;
++};
++static mb2Field_t mb2_aim_field[MAX_GENTITIES];
++static int mb2_aim_field_time[MAX_GENTITIES];
++
++static mb2Field_t MB2_AimField(const gentity_t* blocker, const gentity_t* attacker)
++{
++	vec3_t from, to, dir, ang;
++	VectorCopy(blocker->client->ps.origin, from);
++	from[2] += blocker->client->ps.viewheight;
++	VectorCopy(attacker->client->ps.origin, to);
++	to[2] += attacker->client->ps.viewheight * 0.5f; // middle of the chest
++	VectorSubtract(to, from, dir);
++	const float dist = VectorLength(dir) < 16.0f ? 16.0f : VectorLength(dir);
++	vectoangles(dir, ang);
++	const float d_yaw = AngleSubtract(blocker->client->ps.viewangles[YAW], ang[YAW]);       // + = left of the body
++	const float d_pitch = AngleSubtract(blocker->client->ps.viewangles[PITCH], ang[PITCH]); // + = below the body
++	float ang_w = RAD2DEG(atan2f(16.0f, dist));
++	float ang_h = RAD2DEG(atan2f(26.0f, dist));
++	if (ang_w < 3.0f) ang_w = 3.0f;
++	if (ang_h < 4.0f) ang_h = 4.0f;
++	const float ox = -d_yaw / ang_w;   // + = right
++	const float oy = -d_pitch / ang_h; // + = up
++
++	const int n = blocker->s.number;
++	mb2Field_t f = mb2_aim_field[n];
++	if (level.time - mb2_aim_field_time[n] > 1000 || !f.side || !f.height)
++	{
++		f.side = ox < 0.0f ? -1 : 1;
++		f.height = oy < 0.0f ? -1 : 1;
++	}
++	// switch only when clearly over the border (hysteresis)
++	const float hyst = 0.15f;
++	if (f.side == 1 && ox < -hyst) f.side = -1;
++	else if (f.side == -1 && ox > hyst) f.side = 1;
++	if (f.height == 1 && oy < -hyst) f.height = -1;
++	else if (f.height == -1 && oy > hyst) f.height = 1;
++	mb2_aim_field[n] = f;
++	mb2_aim_field_time[n] = level.time;
++	return f;
++}
++
++// 2 = perfect, 1 = semi, 0 = wrong
++static int MB2_FieldResult(const mb2Zone_t& inc, const mb2Field_t& f)
++{
++	if (!inc.col && !inc.row)
++	{
++		return 0;
++	}
++	if (inc.col && inc.row)
++	{
++		if (f.side == inc.col && f.height == inc.row) return 2;
++		if (f.side == inc.col) return 1; // same side, other height
++		return 0;
++	}
++	if (inc.col)
++	{
++		return f.side == inc.col ? 2 : 0; // horizontal: both fields of that side
++	}
++	return f.height == inc.row ? 2 : 0; // from above / below: both fields of that height
++}
++
++// Is field (side,height) one the swing comes from (for the indicator)?
++static qboolean MB2_IncomingInField(const mb2Zone_t& inc, const int side, const int height)
++{
++	if (!inc.col && !inc.row)
++	{
++		return qfalse;
++	}
++	if (inc.col && inc.row) return side == inc.col && height == inc.row ? qtrue : qfalse;
++	if (inc.col) return side == inc.col ? qtrue : qfalse;
++	return height == inc.row ? qtrue : qfalse;
++}
++
 +// Does the incoming swing belong to field i (for the indicator)?
 +static qboolean MB2_IncomingIsField(const mb2Zone_t& inc, const int i)
 +{
@@ -632,14 +717,14 @@ index 0000000..dabdda0
 +	float f;
 +	switch (saber_anim_level)
 +	{
-+	case SS_FAST: f = 0.72f; break;   // blue
-+	case SS_TAVION: f = 0.78f; break; // cyan
-+	case SS_MEDIUM: f = 0.80f; break; // yellow
-+	case SS_DUAL: f = 0.85f; break;
-+	case SS_STAFF: f = 0.85f; break;
-+	case SS_DESANN: f = 0.95f; break; // purple
-+	case SS_STRONG: f = 1.08f; break; // red: a little faster than before
-+	default: f = 0.85f; break;
++	case SS_FAST: f = 0.86f; break;   // blue
++	case SS_TAVION: f = 0.88f; break; // cyan
++	case SS_MEDIUM: f = 0.90f; break; // yellow
++	case SS_DUAL: f = 0.93f; break;
++	case SS_STAFF: f = 0.93f; break;
++	case SS_DESANN: f = 1.0f; break; // purple
++	case SS_STRONG: f = 1.12f; break; // red: a little faster than before
++	default: f = 0.93f; break;
 +	}
 +	f *= mb2_swing_speed->value > 0.2f ? mb2_swing_speed->value : 1.0f;
 +	return f;
@@ -851,10 +936,9 @@ index 0000000..dabdda0
 +		}
 +		else
 +		{
-+			float aim_deg;
-+			const qboolean has_aim = MB2_AimAngle(blocker, attacker, &aim_deg);
-+			perfect = has_aim && MB2_AimMatches(incoming, aim_deg) ? qtrue : qfalse;
-+			semi = !perfect && has_aim && MB2_AimSemi(incoming, aim_deg) ? qtrue : qfalse;
++			const int res = MB2_FieldResult(incoming, MB2_AimField(blocker, attacker));
++			perfect = res == 2 ? qtrue : qfalse;
++			semi = res == 1 ? qtrue : qfalse;
 +		}
 +
 +		// 3. MBlock: tapped attack while blocking, right before the hit
@@ -1100,10 +1184,10 @@ index 0000000..dabdda0
 +
 +	// dark ring
 +	vec4_t dark = { 0.0f, 0.0f, 0.0f, 0.4f };
-+	for (int f = 0; f < 7; f++)
++	for (int f = 0; f < 4; f++)
 +	{
-+		const float fa = DEG2RAD(mb2_zone_deg[f]);
-+		MB2_Arc(cx, cy, fa - DEG2RAD(17.0f), fa + DEG2RAD(17.0f), radius, width, dark);
++		const float fa = DEG2RAD(45.0f + 90.0f * f);
++		MB2_Arc(cx, cy, fa - DEG2RAD(35.0f), fa + DEG2RAD(35.0f), radius, width, dark);
 +	}
 +
 +	// flash after a block result (MB2 colours)
@@ -1119,10 +1203,6 @@ index 0000000..dabdda0
 +	{
 +		MB2_SetColor(flash, 0.5f, 1.0f, 0.5f, 1.0f - since_perfect / 300.0f); // green = perfect block
 +	}
-+	else if (mb2_hud_semi_time && level.time - mb2_hud_semi_time >= 0 && level.time - mb2_hud_semi_time < 300)
-+	{
-+		MB2_SetColor(flash, 0.85f, 1.0f, 0.3f, 1.0f - (level.time - mb2_hud_semi_time) / 300.0f); // yellow-green = semi block
-+	}
 +	else if (mb2_hud_mbdef_time && since_mbdef >= 0 && since_mbdef < 300)
 +	{
 +		MB2_SetColor(flash, 1.0f, 0.85f, 0.1f, 1.0f - since_mbdef / 300.0f); // yellow = MB defense
@@ -1137,20 +1217,19 @@ index 0000000..dabdda0
 +	}
 +	if (flash[3] > 0.0f)
 +	{
-+		MB2_Arc(cx, cy, 0.0f, 2.0f * M_PI, radius, width, flash);
-+		return;
++		// thin outer ring, so the fields stay readable underneath
++		MB2_Arc(cx, cy, 0.0f, 2.0f * M_PI, radius + width + 1.5f, 1.8f, flash);
 +	}
 +
-+	// 7 fixed fields (no rotation), like MB2's 7 PB zones: up, up-left,
-+	// up-right, left, right, down-left, down-right. The zones sit on the
-+	// enemy's body; borders between neighbours count for both (overlaps).
-+	float aim_deg = 0.0f;
-+	const qboolean has_aim = !mb2_input->integer && MB2_AimAngle(player, enemy, &aim_deg) ? qtrue : qfalse;
-+	const float reach = 22.5f + MB2_Overlap();
++	// 4 fixed fields: up-left, down-left, up-right, down-right
++	const qboolean use_aim = !mb2_input->integer ? qtrue : qfalse;
++	const mb2Field_t aim = use_aim ? MB2_AimField(player, enemy) : mb2Field_t{ 0, 0 };
 +
-+	// incoming swing direction, held a little so it is easy to read
++	// incoming swing: locked once per swing (start/attack), transitions
++	// between swings do not change it, so it does not flicker
++	static int last_move = -1;
 +	const int move = enemy->client->ps.saber_move;
-+	if (PM_SaberInStart(move) || PM_SaberInAttack(move) || PM_SaberInTransition(move))
++	if ((PM_SaberInStart(move) || PM_SaberInAttack(move)) && move != last_move)
 +	{
 +		const mb2Zone_t z = MB2_IncomingZone(saber_moveData[move].startQuad);
 +		if (z.col || z.row)
@@ -1159,27 +1238,29 @@ index 0000000..dabdda0
 +			mb2_hud_inc_time = level.time;
 +		}
 +	}
++	last_move = move;
 +	const int inc_age = level.time - mb2_hud_inc_time;
 +	const qboolean inc_on = mb2_hud_inc_time && inc_age >= 0 && inc_age < 900
 +		&& (mb2_hud_inc_zone.col || mb2_hud_inc_zone.row) ? qtrue : qfalse;
 +	const float inc_alpha = inc_age < 600 ? 1.0f : 1.0f - (inc_age - 600) / 300.0f;
-+	const qboolean ready = inc_on && has_aim && MB2_AimMatches(mb2_hud_inc_zone, aim_deg) ? qtrue : qfalse;
-+	const qboolean semi_ready = !ready && inc_on && has_aim && MB2_AimSemi(mb2_hud_inc_zone, aim_deg) ? qtrue : qfalse;
++	const int res = inc_on && use_aim ? MB2_FieldResult(mb2_hud_inc_zone, aim) : 0;
 +
-+	const float half = DEG2RAD(17.0f);
-+	for (int i = 0; i < 7; i++)
++	const float half = DEG2RAD(35.0f);
++	for (int f = 0; f < 4; f++)
 +	{
-+		const float a = DEG2RAD(mb2_zone_deg[i]);
-+		const qboolean is_inc = inc_on && MB2_IncomingIsField(mb2_hud_inc_zone, i) ? qtrue : qfalse;
-+		const qboolean is_aim = has_aim && MB2_AngDiff(aim_deg, mb2_zone_deg[i]) <= reach ? qtrue : qfalse;
++		const float a = DEG2RAD(45.0f + 90.0f * f);
++		const int side = f == 0 || f == 3 ? 1 : -1;   // 45 and 315 degrees are on the right
++		const int height = f <= 1 ? 1 : -1;           // 45 and 135 degrees are up
++		const qboolean is_inc = inc_on && MB2_IncomingInField(mb2_hud_inc_zone, side, height) ? qtrue : qfalse;
++		const qboolean is_aim = use_aim && aim.side == side && aim.height == height ? qtrue : qfalse;
 +		vec4_t col;
-+		if (is_inc && ready)
++		if (is_aim && res == 2)
 +		{
-+			MB2_SetColor(col, 0.2f, 1.0f, 0.3f, inc_alpha); // green: your aim matches, perfect block ready
++			MB2_SetColor(col, 0.2f, 1.0f, 0.3f, inc_alpha); // green: perfect block ready
 +		}
-+		else if (is_inc && semi_ready)
++		else if (is_aim && res == 1)
 +		{
-+			MB2_SetColor(col, 1.0f, 0.9f, 0.1f, inc_alpha); // yellow: one zone off, semi block (half cost)
++			MB2_SetColor(col, 1.0f, 0.9f, 0.1f, inc_alpha); // yellow: semi block (half cost)
 +		}
 +		else if (is_inc && mb2_hint->integer)
 +		{
@@ -1187,7 +1268,7 @@ index 0000000..dabdda0
 +		}
 +		else if (is_aim)
 +		{
-+			MB2_SetColor(col, 1.0f, 1.0f, 1.0f, 0.85f); // white: the zone you aim at
++			MB2_SetColor(col, 1.0f, 1.0f, 1.0f, 0.85f); // white: where you aim
 +		}
 +		else
 +		{
