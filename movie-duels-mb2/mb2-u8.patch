@@ -221,10 +221,10 @@ index 9d0c690..7d8edf0 100644
  					}
 diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
 new file mode 100644
-index 0000000..437cce1
+index 0000000..65c8884
 --- /dev/null
 +++ b/code/game/wp_saber_mb2.cpp
-@@ -0,0 +1,1452 @@
+@@ -0,0 +1,1449 @@
 +/*
 +===========================================================================
 +MB2-style saber blocking layer for Movie Duels (SP).
@@ -298,6 +298,7 @@ index 0000000..437cce1
 +static cvar_t* mb2_npc_arc_bonus; // extra block arc for NPCs in degrees
 +static cvar_t* mb2_npc_retreat_bp; // NPCs back off below this many block points (0 = off)
 +static cvar_t* mb2_block_arc;   // width of the block in degrees in front of you (360 = all around)
++static cvar_t* mb2_body_bounce; // 1 = a body hit stops the swing and bounces back (v18)
 +
 +static void MB2_RegisterCvars()
 +{
@@ -317,6 +318,7 @@ index 0000000..437cce1
 +	mb2_block_arc = gi.cvar("g_MB2BlockArc", "150", CVAR_ARCHIVE);
 +	mb2_npc_arc_bonus = gi.cvar("g_MB2NPCBlockArcBonus", "60", CVAR_ARCHIVE);
 +	mb2_npc_retreat_bp = gi.cvar("g_MB2NPCRetreatBP", "30", CVAR_ARCHIVE);
++	mb2_body_bounce = gi.cvar("g_MB2BodyBounce", "1", CVAR_ARCHIVE);
 +}
 +
 +// ---------------------------------------------------------------------------
@@ -1639,15 +1641,10 @@ index 0000000..437cce1
 +// back instead of cutting through. The bounce is the short one (not the slow
 +// block bounce), so the next swing of the combo can follow right away.
 +// A hit that kills still cuts through. g_MB2BodyBounce 0 = old MD behaviour.
-+static cvar_t* mb2_body_bounce;
 +
 +void MB2_BodyHitBounce(gentity_t* attacker, const gentity_t* victim)
 +{
-+	if (!mb2_body_bounce)
-+	{
-+		mb2_body_bounce = gi.cvar("g_MB2BodyBounce", "1", CVAR_ARCHIVE);
-+	}
-+	if (!MB2_Active() || !mb2_body_bounce->integer)
++	if (!MB2_Active() || !mb2_body_bounce || !mb2_body_bounce->integer)
 +	{
 +		return;
 +	}
