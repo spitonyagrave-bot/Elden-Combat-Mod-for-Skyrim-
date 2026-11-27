@@ -84,6 +84,29 @@ index dc9e68d..0f7889d 100644
  	"${SPDir}/game/wp_saberLoad.cpp"
  	"${SPDir}/game/wp_stun_baton.cpp"
  	"${SPDir}/game/wp_thermal.cpp"
+diff --git a/code/game/bg_panimate.cpp b/code/game/bg_panimate.cpp
+index 71d9e2c..4b8e77a 100644
+--- a/code/game/bg_panimate.cpp
++++ b/code/game/bg_panimate.cpp
+@@ -5655,6 +5655,8 @@ extern qboolean PM_InSaberAnim(int anim);
+ // 1) The invalid bitwise-OR anim exclusion check
+ // 2) Parentheses around fatigue flag tests
+ //======================================================================
++extern float MB2_SwingSpeedFactor(const gentity_t* gent, int saber_anim_level, int anim);
++
+ void PM_SaberStartTransAnim(const int saberAnimLevel,
+ 	const int anim,
+ 	float* animSpeed,
+@@ -5673,6 +5675,9 @@ void PM_SaberStartTransAnim(const int saberAnimLevel,
+ 		return;
+ 	}
+ 
++	// MB2 combat: slower, readable swing tempo per style
++	*animSpeed *= MB2_SwingSpeedFactor(gent, saberAnimLevel, anim);
++
+ 	//======================================================================
+ 	// 1. Base JKA speeds for all modes
+ 	//======================================================================
 diff --git a/code/game/wp_saber.cpp b/code/game/wp_saber.cpp
 index 3bbd3f3..41557d0 100644
 --- a/code/game/wp_saber.cpp
@@ -155,10 +178,10 @@ index 3bbd3f3..41557d0 100644
  					}
 diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
 new file mode 100644
-index 0000000..6de924a
+index 0000000..1192333
 --- /dev/null
 +++ b/code/game/wp_saber_mb2.cpp
-@@ -0,0 +1,1065 @@
+@@ -0,0 +1,1117 @@
 +/*
 +===========================================================================
 +MB2-style saber blocking layer for Movie Duels (SP).
@@ -539,12 +562,64 @@ index 0000000..6de924a
 +	return chance;
 +}
 +
++// ---------------------------------------------------------------------------
++// MB2 swing tempo: every style swings a bit slower so the direction can be
++// read by eye (Joel: red was readable but too slow, the rest too fast).
++// Factor on top of Movie Duels' own speed; g_MB2SwingSpeed scales all.
++// Only attacks, starts, transitions and returns, not bounces or parries.
++// ---------------------------------------------------------------------------
++static cvar_t* mb2_swing_speed;
++
++static qboolean MB2_IsSwingAnim(const int anim)
++{
++	static const int first[7] = { BOTH_A1_T__B_, BOTH_A2_T__B_, BOTH_A3_T__B_, BOTH_A4_T__B_, BOTH_A5_T__B_, BOTH_A6_T__B_, BOTH_A7_T__B_ };
++	static const int end[7] = { BOTH_B1_BR___, BOTH_B2_BR___, BOTH_B3_BR___, BOTH_B4_BR___, BOTH_B5_BR___, BOTH_B6_BR___, BOTH_B7_BR___ };
++	for (int i = 0; i < 7; i++)
++	{
++		if (anim >= first[i] && anim < end[i])
++		{
++			return qtrue;
++		}
++	}
++	return qfalse;
++}
++
++float MB2_SwingSpeedFactor(const gentity_t* gent, const int saber_anim_level, const int anim)
++{
++	MB2_RegisterCvars();
++	if (!mb2_on->integer || g_SerenityJediEngineMode->integer != 2 || !gent || !gent->client
++		|| gent->client->ps.weapon != WP_SABER || !MB2_IsSwingAnim(anim))
++	{
++		return 1.0f;
++	}
++	if (!mb2_swing_speed)
++	{
++		mb2_swing_speed = gi.cvar("g_MB2SwingSpeed", "1", CVAR_ARCHIVE);
++	}
++	float f;
++	switch (saber_anim_level)
++	{
++	case SS_FAST: f = 0.72f; break;   // blue
++	case SS_TAVION: f = 0.78f; break; // cyan
++	case SS_MEDIUM: f = 0.80f; break; // yellow
++	case SS_DUAL: f = 0.85f; break;
++	case SS_STAFF: f = 0.85f; break;
++	case SS_DESANN: f = 0.95f; break; // purple
++	case SS_STRONG: f = 1.08f; break; // red: a little faster than before
++	default: f = 0.85f; break;
++	}
++	f *= mb2_swing_speed->value > 0.2f ? mb2_swing_speed->value : 1.0f;
++	return f;
++}
++
 +// How long the attacker's current swing has been running, in ms.
 +static int MB2_SwingElapsedMs(const gentity_t* attacker)
 +{
 +	const int len = PM_AnimLength(attacker->client->clientInfo.animFileIndex,
 +		static_cast<animNumber_t>(attacker->client->ps.torsoAnim));
-+	const int elapsed = len - attacker->client->ps.torsoAnimTimer;
++	const float f = MB2_SwingSpeedFactor(attacker, attacker->client->ps.saberAnimLevel, attacker->client->ps.torsoAnim);
++	const int real_len = static_cast<int>(len / (f > 0.1f ? f : 1.0f)); // slowed swings last longer
++	const int elapsed = real_len - attacker->client->ps.torsoAnimTimer;
 +	return elapsed < 0 ? 0 : elapsed;
 +}
 +
