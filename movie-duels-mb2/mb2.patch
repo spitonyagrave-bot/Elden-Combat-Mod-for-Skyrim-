@@ -215,7 +215,7 @@ index 3bbd3f3..41557d0 100644
  					}
 diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
 new file mode 100644
-index 0000000..b0e90ce
+index 0000000..80dfa06
 --- /dev/null
 +++ b/code/game/wp_saber_mb2.cpp
 @@ -0,0 +1,1409 @@
@@ -306,7 +306,7 @@ index 0000000..b0e90ce
 +	mb2_npc_react = gi.cvar("g_MB2NPCReaction", "100", CVAR_ARCHIVE);
 +	mb2_back_damage = gi.cvar("g_MB2BackHitDamage", "30", CVAR_ARCHIVE);
 +	mb2_debug = gi.cvar("g_MB2Debug", "0", CVAR_ARCHIVE);
-+	mb2_one_hit = gi.cvar("g_MB2OneHitKill", "1", CVAR_ARCHIVE);
++	mb2_one_hit = gi.cvar("g_MB2OneHitKillOn", "0", CVAR_ARCHIVE); // v16 (Joel): normal health by default; new name so the old saved value does not apply
 +	mb2_no_auto_parry = gi.cvar("g_MB2NoAutoParry", "1", CVAR_ARCHIVE);
 +	mb2_block_arc = gi.cvar("g_MB2BlockArc", "150", CVAR_ARCHIVE);
 +	mb2_npc_arc_bonus = gi.cvar("g_MB2NPCBlockArcBonus", "60", CVAR_ARCHIVE);
@@ -854,7 +854,7 @@ index 0000000..b0e90ce
 +{
 +	if (!mb2_log)
 +	{
-+		mb2_log = gi.cvar("g_MB2Log", "1", CVAR_ARCHIVE);
++		mb2_log = gi.cvar("g_MB2TestLog", "0", CVAR_ARCHIVE);
 +	}
 +	if (!mb2_log->integer)
 +	{
