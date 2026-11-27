@@ -178,7 +178,7 @@ index 3bbd3f3..41557d0 100644
  					}
 diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
 new file mode 100644
-index 0000000..2cec1ed
+index 0000000..dabdda0
 --- /dev/null
 +++ b/code/game/wp_saber_mb2.cpp
 @@ -0,0 +1,1178 @@
@@ -354,7 +354,7 @@ index 0000000..2cec1ed
 +	VectorCopy(blocker->client->ps.origin, from);
 +	from[2] += blocker->client->ps.viewheight;
 +	VectorCopy(attacker->client->ps.origin, to);
-+	to[2] += attacker->client->ps.viewheight * 0.75f; // chest height
++	to[2] += attacker->client->ps.viewheight * 0.5f; // middle of the chest (eyes are at viewheight)
 +	VectorSubtract(to, from, dir);
 +	const float dist = VectorLength(dir) < 16.0f ? 16.0f : VectorLength(dir);
 +	vectoangles(dir, ang);
@@ -363,14 +363,14 @@ index 0000000..2cec1ed
 +	const float d_pitch = AngleSubtract(blocker->client->ps.viewangles[PITCH], ang[PITCH]); // + = below the body
 +
 +	// half body width / height in degrees at this distance
-+	float ang_w = RAD2DEG(atan2f(18.0f, dist));
-+	float ang_h = RAD2DEG(atan2f(30.0f, dist));
++	float ang_w = RAD2DEG(atan2f(16.0f, dist));
++	float ang_h = RAD2DEG(atan2f(26.0f, dist));
 +	if (ang_w < 3.0f) ang_w = 3.0f;
 +	if (ang_h < 4.0f) ang_h = 4.0f;
 +
 +	const float ox = -d_yaw / ang_w;
 +	const float oy = -d_pitch / ang_h;
-+	if (ox * ox + oy * oy < 0.45f * 0.45f)
++	if (ox * ox + oy * oy < 0.3f * 0.3f) // only the very middle of the chest is "no zone"
 +	{
 +		return qfalse;
 +	}
@@ -1079,7 +1079,7 @@ index 0000000..2cec1ed
 +	VectorCopy(player->client->ps.origin, from);
 +	from[2] += player->client->ps.viewheight;
 +	VectorCopy(enemy->client->ps.origin, to);
-+	to[2] += enemy->client->ps.viewheight * 0.75f; // chest
++	to[2] += enemy->client->ps.viewheight * 0.5f; // chest
 +	VectorSubtract(to, from, dir);
 +	vectoangles(dir, ang);
 +	const float d_yaw = AngleSubtract(player->client->ps.viewangles[YAW], ang[YAW]);     // + = looking left of the enemy
