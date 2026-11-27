@@ -44,6 +44,34 @@ index eaf1f08..3ad5971 100644
  	if (cg_SerenityJediEngineMode.integer)
  	{
  		if (cg.snap->ps.powerups[PW_CLOAKED])
+diff --git a/code/game/AI_Jedi.cpp b/code/game/AI_Jedi.cpp
+index 0693ba2..93fd059 100644
+--- a/code/game/AI_Jedi.cpp
++++ b/code/game/AI_Jedi.cpp
+@@ -2391,6 +2391,8 @@ static qboolean NPC_HandleSlapMelee(gentity_t* NPC, gentity_t* enemy, int enemyD
+ 	return qfalse;     // no slap action taken
+ }
+ 
++extern qboolean MB2_NPCShouldRetreat(gentity_t* npc, int enemy_dist);
++
+ static void jedi_combat_distance(const int enemy_dist)
+ {
+ 	playerState_t* ps = &NPC->client->ps;
+@@ -2407,6 +2409,14 @@ static void jedi_combat_distance(const int enemy_dist)
+ 		return;
+ 	}
+ 
++	// MB2 combat: low on block points -> back off walking and recover
++	if (MB2_NPCShouldRetreat(NPC, enemy_dist))
++	{
++		jedi_retreat();
++		ucmd.buttons |= BUTTON_WALKING;
++		return;
++	}
++
+ 	// ------------------------------------------------------------
+ 	// 2. Back off from spin attacks
+ 	// ------------------------------------------------------------
 diff --git a/code/game/CMakeLists.txt b/code/game/CMakeLists.txt
 index dc9e68d..0f7889d 100644
 --- a/code/game/CMakeLists.txt
@@ -127,10 +155,10 @@ index 3bbd3f3..41557d0 100644
  					}
 diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
 new file mode 100644
-index 0000000..8b3ec3f
+index 0000000..6de924a
 --- /dev/null
 +++ b/code/game/wp_saber_mb2.cpp
-@@ -0,0 +1,871 @@
+@@ -0,0 +1,1065 @@
 +/*
 +===========================================================================
 +MB2-style saber blocking layer for Movie Duels (SP).
@@ -201,6 +229,8 @@ index 0000000..8b3ec3f
 +static cvar_t* mb2_debug;       // 1 = print what happened on each block
 +static cvar_t* mb2_one_hit;     // 1 = a saber hit that is not blocked kills (MB2)
 +static cvar_t* mb2_no_auto_parry; // 1 = no automatic parry for the player when not holding block
++static cvar_t* mb2_npc_arc_bonus; // extra block arc for NPCs in degrees
++static cvar_t* mb2_npc_retreat_bp; // NPCs back off below this many block points (0 = off)
 +static cvar_t* mb2_block_arc;   // width of the block in degrees in front of you (360 = all around)
 +
 +static void MB2_RegisterCvars()
@@ -219,6 +249,8 @@ index 0000000..8b3ec3f
 +	mb2_one_hit = gi.cvar("g_MB2OneHitKill", "1", CVAR_ARCHIVE);
 +	mb2_no_auto_parry = gi.cvar("g_MB2NoAutoParry", "1", CVAR_ARCHIVE);
 +	mb2_block_arc = gi.cvar("g_MB2BlockArc", "150", CVAR_ARCHIVE);
++	mb2_npc_arc_bonus = gi.cvar("g_MB2NPCBlockArcBonus", "60", CVAR_ARCHIVE);
++	mb2_npc_retreat_bp = gi.cvar("g_MB2NPCRetreatBP", "30", CVAR_ARCHIVE);
 +}
 +
 +// ---------------------------------------------------------------------------
@@ -256,28 +288,6 @@ index 0000000..8b3ec3f
 +	return 0;
 +}
 +
-+// The defender's aim relative to the attacker's body.
-+static mb2Zone_t MB2_AimZone(const gentity_t* blocker, const gentity_t* attacker)
-+{
-+	vec3_t from, to, dir, ang;
-+	VectorCopy(blocker->client->ps.origin, from);
-+	from[2] += blocker->client->ps.viewheight;
-+	VectorCopy(attacker->client->ps.origin, to);
-+	to[2] += attacker->client->ps.viewheight * 0.75f; // chest height
-+	VectorSubtract(to, from, dir);
-+	vectoangles(dir, ang);
-+
-+	// positive yaw difference = looking to the left of the attacker
-+	const float d_yaw = AngleSubtract(blocker->client->ps.viewangles[YAW], ang[YAW]);
-+	// negative pitch difference = looking above the attacker
-+	const float d_pitch = AngleSubtract(blocker->client->ps.viewangles[PITCH], ang[PITCH]);
-+
-+	mb2Zone_t z;
-+	z.col = -MB2_Sign(d_yaw, mb2_aim_yaw->value);
-+	z.row = -MB2_Sign(d_pitch, mb2_aim_pitch->value);
-+	return z;
-+}
-+
 +// Movement keys as a zone (controller option, and the MBlock key check).
 +static mb2Zone_t MB2_KeyZone(const gentity_t* ent)
 +{
@@ -285,6 +295,103 @@ index 0000000..8b3ec3f
 +	z.col = MB2_Sign(ent->client->pers.cmd.rightmove, 0);
 +	z.row = MB2_Sign(ent->client->pers.cmd.forwardmove, 0);
 +	return z;
++}
++
++// ---------------------------------------------------------------------------
++// MB2 zones (research: 7 PB zones attached to the enemy body + 6 overlaps).
++// Angles as seen by the defender on screen: 0 = right, 90 = up.
++//   D 0, WD 45, W 90, WA 135, A 180, SA 225, SD 315  (no zone straight down)
++// The aim is measured relative to the enemy's body size, so up close you
++// have to move the mouse further than from a distance (like MB2).
++// ---------------------------------------------------------------------------
++static const float mb2_zone_deg[7] = { 0.0f, 45.0f, 90.0f, 135.0f, 180.0f, 225.0f, 315.0f };
++
++static float MB2_AngDiff(const float a, const float b)
++{
++	float d = fmodf(fabsf(a - b), 360.0f);
++	return d > 180.0f ? 360.0f - d : d;
++}
++
++// Overlap width at zone borders ("magic overlaps"), wider on easier skill.
++static float MB2_Overlap()
++{
++	switch (g_spskill->integer)
++	{
++	case 0: return 18.0f;
++	case 1: return 10.0f;
++	default: return 6.0f;
++	}
++}
++
++// Defender's aim around the attacker's body. Returns qfalse when aiming at
++// the middle of the body (no zone).
++static qboolean MB2_AimAngle(const gentity_t* blocker, const gentity_t* attacker, float* out_deg)
++{
++	vec3_t from, to, dir, ang;
++	VectorCopy(blocker->client->ps.origin, from);
++	from[2] += blocker->client->ps.viewheight;
++	VectorCopy(attacker->client->ps.origin, to);
++	to[2] += attacker->client->ps.viewheight * 0.75f; // chest height
++	VectorSubtract(to, from, dir);
++	const float dist = VectorLength(dir) < 16.0f ? 16.0f : VectorLength(dir);
++	vectoangles(dir, ang);
++
++	const float d_yaw = AngleSubtract(blocker->client->ps.viewangles[YAW], ang[YAW]);       // + = left of the body
++	const float d_pitch = AngleSubtract(blocker->client->ps.viewangles[PITCH], ang[PITCH]); // + = below the body
++
++	// half body width / height in degrees at this distance
++	float ang_w = RAD2DEG(atan2f(18.0f, dist));
++	float ang_h = RAD2DEG(atan2f(30.0f, dist));
++	if (ang_w < 3.0f) ang_w = 3.0f;
++	if (ang_h < 4.0f) ang_h = 4.0f;
++
++	const float ox = -d_yaw / ang_w;
++	const float oy = -d_pitch / ang_h;
++	if (ox * ox + oy * oy < 0.45f * 0.45f)
++	{
++		return qfalse;
++	}
++	float deg = RAD2DEG(atan2f(oy, ox));
++	if (deg < 0.0f) deg += 360.0f;
++	*out_deg = deg;
++	return qtrue;
++}
++
++// Screen angle of the incoming swing zone; Q_B swings (from below) count for
++// both low zones.
++static float MB2_IncomingDeg(const mb2Zone_t& inc)
++{
++	float deg = RAD2DEG(atan2f(static_cast<float>(inc.row), static_cast<float>(inc.col)));
++	if (deg < 0.0f) deg += 360.0f;
++	return deg;
++}
++
++static qboolean MB2_AimMatches(const mb2Zone_t& inc, const float aim_deg)
++{
++	if (!inc.col && !inc.row)
++	{
++		return qfalse;
++	}
++	const float reach = 22.5f + MB2_Overlap();
++	if (inc.col == 0 && inc.row == -1)
++	{
++		return MB2_AngDiff(aim_deg, 225.0f) <= reach || MB2_AngDiff(aim_deg, 315.0f) <= reach ? qtrue : qfalse;
++	}
++	return MB2_AngDiff(aim_deg, MB2_IncomingDeg(inc)) <= reach ? qtrue : qfalse;
++}
++
++// Does the incoming swing belong to field i (for the indicator)?
++static qboolean MB2_IncomingIsField(const mb2Zone_t& inc, const int i)
++{
++	if (!inc.col && !inc.row)
++	{
++		return qfalse;
++	}
++	if (inc.col == 0 && inc.row == -1)
++	{
++		return i == 5 || i == 6 ? qtrue : qfalse;
++	}
++	return MB2_AngDiff(MB2_IncomingDeg(inc), mb2_zone_deg[i]) < 1.0f ? qtrue : qfalse;
 +}
 +
 +// How close the aim must be: hard = exact zone, normal = exact or one step
@@ -358,6 +465,10 @@ index 0000000..8b3ec3f
 +	if (blocker->client->ps.ManualBlockingFlags & 1 << HOLDINGBLOCKANDATTACK)
 +	{
 +		cost *= 1.2f; // caught mid-swing
++	}
++	if (blocker->client->ps.groundEntityNum == ENTITYNUM_NONE)
++	{
++		cost *= 1.3f; // defender in the air (MB2)
 +	}
 +
 +	const int result = static_cast<int>(cost + 0.5f);
@@ -447,10 +558,16 @@ index 0000000..8b3ec3f
 +static int mb2_hud_hit_time;     // saber body hit by or on the player (ring flashes red, MB2 hit effect)
 +static int mb2_hud_clash_time;   // saber hit saber, player involved (ring flashes yellow, MB2 hit effect)
 +
++static qboolean MB2_IsPlayer(const gentity_t* ent);
++
 +// Is the attacker inside the blocker's block arc (MB2: front only)?
 +static qboolean MB2_InBlockArc(const gentity_t* blocker, const gentity_t* attacker)
 +{
-+	const float arc = mb2_block_arc->value;
++	float arc = mb2_block_arc->value;
++	if (!MB2_IsPlayer(blocker))
++	{
++		arc += mb2_npc_arc_bonus->value; // NPCs turn to their enemy and cover the sides too, only the back stays open
++	}
 +	if (arc >= 360.0f)
 +	{
 +		return qtrue;
@@ -617,8 +734,16 @@ index 0000000..8b3ec3f
 +	if (player_blocker)
 +	{
 +		// 2. Player: aim (or keys) decides perfect block
-+		const mb2Zone_t aim = mb2_input->integer ? MB2_KeyZone(blocker) : MB2_AimZone(blocker, attacker);
-+		const qboolean perfect = MB2_ZoneMatches(incoming, aim);
++		qboolean perfect;
++		if (mb2_input->integer)
++		{
++			perfect = MB2_ZoneMatches(incoming, MB2_KeyZone(blocker));
++		}
++		else
++		{
++			float aim_deg;
++			perfect = MB2_AimAngle(blocker, attacker, &aim_deg) && MB2_AimMatches(incoming, aim_deg) ? qtrue : qfalse;
++		}
 +
 +		// 3. MBlock: tapped attack while blocking, right before the hit
 +		const qboolean tapped = blocker->client->ps.ManualBlockingFlags & 1 << PERFECTBLOCKING ? qtrue : qfalse;
@@ -708,6 +833,7 @@ index 0000000..8b3ec3f
 +// ---------------------------------------------------------------------------
 +static cvar_t* mb2_wheel;
 +static cvar_t* mb2_wheel_size;
++static cvar_t* mb2_hint;
 +
 +static gentity_t* MB2_HudEnemy(const gentity_t* player)
 +{
@@ -800,6 +926,7 @@ index 0000000..8b3ec3f
 +	{
 +		mb2_wheel = gi.cvar("g_MB2Wheel", "1", CVAR_ARCHIVE);
 +		mb2_wheel_size = gi.cvar("g_MB2IndicatorGap", "3", CVAR_ARCHIVE); // ring distance from the crosshair edge
++		mb2_hint = gi.cvar("g_MB2IncomingHint", "1", CVAR_ARCHIVE); // orange field = where the swing comes from
 +	}
 +	if (!mb2_on->integer || !mb2_wheel->integer || g_SerenityJediEngineMode->integer != 2)
 +	{
@@ -846,9 +973,9 @@ index 0000000..8b3ec3f
 +
 +	// dark ring
 +	vec4_t dark = { 0.0f, 0.0f, 0.0f, 0.4f };
-+	for (int f = 0; f < 8; f++)
++	for (int f = 0; f < 7; f++)
 +	{
-+		const float fa = f * (M_PI / 4.0f);
++		const float fa = DEG2RAD(mb2_zone_deg[f]);
 +		MB2_Arc(cx, cy, fa - DEG2RAD(17.0f), fa + DEG2RAD(17.0f), radius, width, dark);
 +	}
 +
@@ -883,9 +1010,12 @@ index 0000000..8b3ec3f
 +		return;
 +	}
 +
-+	// 8 fixed fields (no rotation): up, up-left, up-right, left, right,
-+	// down, down-left, down-right. Like MB2: fixed parts around the crosshair.
-+	const mb2Zone_t aim = MB2_AimZone(player, enemy);
++	// 7 fixed fields (no rotation), like MB2's 7 PB zones: up, up-left,
++	// up-right, left, right, down-left, down-right. The zones sit on the
++	// enemy's body; borders between neighbours count for both (overlaps).
++	float aim_deg = 0.0f;
++	const qboolean has_aim = !mb2_input->integer && MB2_AimAngle(player, enemy, &aim_deg) ? qtrue : qfalse;
++	const float reach = 22.5f + MB2_Overlap();
 +
 +	// incoming swing direction, held a little so it is easy to read
 +	const int move = enemy->client->ps.saber_move;
@@ -902,39 +1032,32 @@ index 0000000..8b3ec3f
 +	const qboolean inc_on = mb2_hud_inc_time && inc_age >= 0 && inc_age < 900
 +		&& (mb2_hud_inc_zone.col || mb2_hud_inc_zone.row) ? qtrue : qfalse;
 +	const float inc_alpha = inc_age < 600 ? 1.0f : 1.0f - (inc_age - 600) / 300.0f;
-+	const qboolean ready = inc_on && !mb2_input->integer && MB2_ZoneMatches(mb2_hud_inc_zone, aim) ? qtrue : qfalse;
++	const qboolean ready = inc_on && has_aim && MB2_AimMatches(mb2_hud_inc_zone, aim_deg) ? qtrue : qfalse;
 +
 +	const float half = DEG2RAD(17.0f);
-+	for (int c = -1; c <= 1; c++)
++	for (int i = 0; i < 7; i++)
 +	{
-+		for (int r = -1; r <= 1; r++)
++		const float a = DEG2RAD(mb2_zone_deg[i]);
++		const qboolean is_inc = inc_on && MB2_IncomingIsField(mb2_hud_inc_zone, i) ? qtrue : qfalse;
++		const qboolean is_aim = has_aim && MB2_AngDiff(aim_deg, mb2_zone_deg[i]) <= reach ? qtrue : qfalse;
++		vec4_t col;
++		if (is_inc && ready)
 +		{
-+			if (!c && !r)
-+			{
-+				continue;
-+			}
-+			const float a = atan2f(static_cast<float>(r), static_cast<float>(c));
-+			const qboolean is_inc = inc_on && mb2_hud_inc_zone.col == c && mb2_hud_inc_zone.row == r ? qtrue : qfalse;
-+			const qboolean is_aim = aim.col == c && aim.row == r ? qtrue : qfalse;
-+			vec4_t col;
-+			if (is_inc && ready)
-+			{
-+				MB2_SetColor(col, 0.2f, 1.0f, 0.3f, inc_alpha); // green: perfect block ready
-+			}
-+			else if (is_inc)
-+			{
-+				MB2_SetColor(col, 1.0f, 0.55f, 0.05f, inc_alpha); // orange: the swing comes from here
-+			}
-+			else if (is_aim)
-+			{
-+				MB2_SetColor(col, 1.0f, 1.0f, 1.0f, 0.85f); // white: where you aim right now
-+			}
-+			else
-+			{
-+				continue; // the dark ring below shows the empty fields
-+			}
-+			MB2_Arc(cx, cy, a - half, a + half, radius, width + (is_inc ? 1.0f : 0.0f), col);
++			MB2_SetColor(col, 0.2f, 1.0f, 0.3f, inc_alpha); // green: your aim matches, perfect block ready
 +		}
++		else if (is_inc && mb2_hint->integer)
++		{
++			MB2_SetColor(col, 1.0f, 0.55f, 0.05f, inc_alpha); // orange: the swing comes from here
++		}
++		else if (is_aim)
++		{
++			MB2_SetColor(col, 1.0f, 1.0f, 1.0f, 0.85f); // white: the zone you aim at
++		}
++		else
++		{
++			continue;
++		}
++		MB2_Arc(cx, cy, a - half, a + half, radius, width + (is_inc ? 1.0f : 0.0f), col);
 +	}
 +}
 +
@@ -959,6 +1082,89 @@ index 0000000..8b3ec3f
 +		return qfalse;
 +	}
 +	return defender->client->ps.ManualBlockingFlags & 1 << HOLDINGBLOCK ? qfalse : qtrue;
++}
++
++// ---------------------------------------------------------------------------
++// Smarter NPC defence
++// ---------------------------------------------------------------------------
++extern qboolean BG_InKnockDown(int anim);
++extern qboolean PM_InKnockDown(const playerState_t* ps);
++extern qboolean PM_SaberInBashedAnim(int anim);
++extern qboolean PM_SaberInMassiveBounce(int move);
++
++// An NPC with its saber in hand keeps its guard up while jumping, rolling or
++// attacking (MB2: you can always block, it only costs more). Not when
++// knocked down, stunned, gripped or out of block points.
++static qboolean MB2_NPCGuarding(const gentity_t* npc)
++{
++	if (MB2_IsPlayer(npc) || !npc->client || npc->health <= 0)
++	{
++		return qfalse;
++	}
++	playerState_t* ps = &npc->client->ps;
++	if (ps->weapon != WP_SABER || !ps->SaberActive() || ps->saberInFlight || ps->blockPoints <= 0)
++	{
++		return qfalse;
++	}
++	if (npc->client->NPC_class == CLASS_GUARD)
++	{
++		return qfalse;
++	}
++	if (BG_InKnockDown(ps->legsAnim) || BG_InKnockDown(ps->torsoAnim) || PM_InKnockDown(ps))
++	{
++		return qfalse;
++	}
++	if (npc->s.eFlags & (EF_FORCE_DRAINED | EF_FORCE_GRIPPED | EF_FORCE_GRASPED))
++	{
++		return qfalse;
++	}
++	if (PM_SaberInBashedAnim(ps->torsoAnim) || PM_SaberInMassiveBounce(ps->torsoAnim))
++	{
++		return qfalse;
++	}
++	return qtrue;
++}
++
++// NPC low on block points: back off (walking) and recover instead of
++// trading hits. Called from the Jedi AI. Returns qtrue while retreating.
++static int mb2_npc_retreat_until[MAX_GENTITIES];
++static int mb2_npc_retreat_cooldown[MAX_GENTITIES];
++static int mb2_npc_regen_time[MAX_GENTITIES];
++
++qboolean MB2_NPCShouldRetreat(gentity_t* npc, const int enemy_dist)
++{
++	if (!MB2_Active() || !npc || !npc->client || MB2_IsPlayer(npc) || mb2_npc_retreat_bp->integer <= 0)
++	{
++		return qfalse;
++	}
++	if (npc->client->ps.weapon != WP_SABER || !npc->enemy || !npc->enemy->client
++		|| npc->enemy->client->ps.weapon != WP_SABER)
++	{
++		return qfalse;
++	}
++	const int n = npc->s.number;
++	if (level.time < mb2_npc_retreat_until[n])
++	{
++		if (level.time >= mb2_npc_regen_time[n])
++		{
++			mb2_npc_regen_time[n] = level.time + 150;
++			wp_block_points_regenerate_over_ride(npc, 1); // recover while backing off
++		}
++		if (npc->client->ps.blockPoints >= mb2_npc_retreat_bp->integer + 25)
++		{
++			mb2_npc_retreat_until[n] = 0; // recovered, fight again
++			return qfalse;
++		}
++		return qtrue;
++	}
++	if (enemy_dist < 220 && npc->client->ps.blockPoints < mb2_npc_retreat_bp->integer
++		&& level.time >= mb2_npc_retreat_cooldown[n])
++	{
++		mb2_npc_retreat_until[n] = level.time + 2500;
++		mb2_npc_retreat_cooldown[n] = level.time + 6000;
++		return qtrue;
++	}
++	return qfalse;
 +}
 +
 +// ---------------------------------------------------------------------------
@@ -993,6 +1199,22 @@ index 0000000..8b3ec3f
 +		&& MB2_InBlockArc(victim, attacker))
 +	{
 +		return damage; // blocking from the front with block points left: normal MD damage
++	}
++	if (MB2_NPCGuarding(victim) && MB2_InBlockArc(victim, attacker))
++	{
++		// NPC was jumping, rolling or swinging: like MB2 the guard still holds,
++		// but it costs block points (x1.3 in the air) instead of killing.
++		int cost = MB2_BlockCost(victim, attacker);
++		if (victim->client->ps.blockPoints > cost)
++		{
++			PM_AddBlockFatigue(&victim->client->ps, cost);
++			if (MB2_IsPlayer(attacker))
++			{
++				MB2_Debug(victim, attacker, va("NPC guard held (moving), cost %d", cost));
++			}
++			return damage;
++		}
++		victim->client->ps.blockPoints = 0; // guard broken: this hit kills
 +	}
 +	*d_flags &= ~DAMAGE_NO_KILL;
 +	const int lethal = victim->health + victim->client->ps.stats[STAT_ARMOR] + 10;
