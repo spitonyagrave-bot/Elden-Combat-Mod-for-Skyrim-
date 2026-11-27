@@ -139,20 +139,21 @@ index ef68241..b2eb0a7 100644
  					// NPCs never stop attacking mid-attack, just follow through.
  					newmove = saberMoveData[curmove].chain_attack;
 diff --git a/code/game/wp_saber.cpp b/code/game/wp_saber.cpp
-index 9d0c690..46a0dca 100644
+index 9d0c690..7d8edf0 100644
 --- a/code/game/wp_saber.cpp
 +++ b/code/game/wp_saber.cpp
-@@ -283,6 +283,9 @@ qboolean WP_BlockMasterClass(const gentity_t* self);
+@@ -283,6 +283,10 @@ qboolean WP_BlockMasterClass(const gentity_t* self);
  int WP_ClassBlockPointCost(const gentity_t* blocker, int cost, qboolean vs_blaster);
  extern qboolean sab_beh_attack_vs_block(gentity_t* attacker, gentity_t* blocker, int saberNum, int bladeNum, vec3_t hit_loc);
  extern qboolean sab_beh_block_vs_attack(gentity_t* blocker, gentity_t* attacker, int saberNum, int bladeNum, vec3_t hit_loc);
 +extern qboolean MB2_ResolveBlock(gentity_t* blocker, gentity_t* attacker, int saber_num, int blade_num, vec3_t hit_loc);
 +extern qboolean MB2_SkipIdleParry(const gentity_t* defender);
++extern void MB2_BodyHitBounce(gentity_t* attacker, const gentity_t* victim);
 +extern int MB2_BodyHitDamage(const gentity_t* attacker, const gentity_t* victim, int damage, int* d_flags);
  extern void g_fatigue_bp_knockaway(gentity_t* blocker);
  void G_Beskar_Attack_Bounce(const gentity_t* self, gentity_t* other);
  extern qboolean Mandalorian_Character(const gentity_t* self);
-@@ -4210,6 +4213,7 @@ static qboolean WP_SaberApplyDamageMD(gentity_t* ent, const float base_damage, c
+@@ -4210,6 +4214,7 @@ static qboolean WP_SaberApplyDamageMD(gentity_t* ent, const float base_damage, c
  							WP_SwingAddHit(ent, victim);
  						}
  					}
@@ -160,7 +161,18 @@ index 9d0c690..46a0dca 100644
  					const int vic_health_before = victim->health;
  					if (thrown_saber && vic_was_alive && WP_SaberBodyCanStick(ent, victim))
  					{// the throw sticks in the body if this hit kills: a normal death, no saber cut / dismemberment, no ragdoll (DH 2026-11-01)
-@@ -10787,11 +10791,14 @@ static void wp_saber_damage_trace_amd(gentity_t* ent, int saberNum, int bladeNum
+@@ -4217,6 +4222,10 @@ static qboolean WP_SaberApplyDamageMD(gentity_t* ent, const float base_damage, c
+ 					}
+ 					G_Damage(victim, inflictor, ent, dmgDir[i], dmgSpot[i], damage, dflags, MOD_SABER,
+ 						hitDismemberLoc[i]);
++					if (!thrown_saber && !(dflags & DAMAGE_NO_DAMAGE))
++					{
++						MB2_BodyHitBounce(ent, victim); // MB2: the swing stops on the body and bounces back
++					}
+ 					if (thrown_saber && g_DebugSaberCombat->integer)
+ 					{
+ 						Com_Printf("SABER BODY STICK: thrown hit %s for %d, health now %d%s\n", victim->classname, damage,
+@@ -10787,11 +10796,14 @@ static void wp_saber_damage_trace_amd(gentity_t* ent, int saberNum, int bladeNum
  					//I'm attacking hit, they're parrying
  					if (saberHitFraction < 1.0f)
  					{
@@ -179,7 +191,7 @@ index 9d0c690..46a0dca 100644
  
  						collision_resolved = qtrue;
  					}
-@@ -10904,7 +10911,7 @@ static void wp_saber_damage_trace_amd(gentity_t* ent, int saberNum, int bladeNum
+@@ -10904,7 +10916,7 @@ static void wp_saber_damage_trace_amd(gentity_t* ent, int saberNum, int bladeNum
  					else
  					{
  						//saber collided when not attacking, parry it
@@ -188,7 +200,7 @@ index 9d0c690..46a0dca 100644
  						{
  							if (!WP_SaberParry(hit_owner, ent, saberNum, bladeNum))
  							{
-@@ -12199,11 +12206,14 @@ static void WP_SaberDamageTrace_MD(gentity_t* ent, int saberNum, int bladeNum)
+@@ -12199,11 +12211,14 @@ static void WP_SaberDamageTrace_MD(gentity_t* ent, int saberNum, int bladeNum)
  					//I'm attacking hit, they're parrying
  					if (saberHitFraction < 1.0f)
  					{
@@ -209,10 +221,10 @@ index 9d0c690..46a0dca 100644
  					}
 diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
 new file mode 100644
-index 0000000..6286e43
+index 0000000..437cce1
 --- /dev/null
 +++ b/code/game/wp_saber_mb2.cpp
-@@ -0,0 +1,1409 @@
+@@ -0,0 +1,1452 @@
 +/*
 +===========================================================================
 +MB2-style saber blocking layer for Movie Duels (SP).
@@ -1621,4 +1633,47 @@ index 0000000..6286e43
 +		MB2_Debug(victim, attacker, "unblocked hit - lethal");
 +	}
 +	return lethal > damage ? lethal : damage;
++}
++
++// v18 (Joel): like MB2, a swing that lands on the body stops there and bounces
++// back instead of cutting through. The bounce is the short one (not the slow
++// block bounce), so the next swing of the combo can follow right away.
++// A hit that kills still cuts through. g_MB2BodyBounce 0 = old MD behaviour.
++static cvar_t* mb2_body_bounce;
++
++void MB2_BodyHitBounce(gentity_t* attacker, const gentity_t* victim)
++{
++	if (!mb2_body_bounce)
++	{
++		mb2_body_bounce = gi.cvar("g_MB2BodyBounce", "1", CVAR_ARCHIVE);
++	}
++	if (!MB2_Active() || !mb2_body_bounce->integer)
++	{
++		return;
++	}
++	if (!attacker || !attacker->client || !victim || !victim->client || victim->health <= 0)
++	{
++		return;
++	}
++	playerState_t* ps = &attacker->client->ps;
++	if (ps->weapon != WP_SABER || ps->saberInFlight || ps->saberLockTime > level.time)
++	{
++		return;
++	}
++	if (!PM_SaberInAttack(ps->saberMove) || PM_SaberInSpecialAttack(ps->torsoAnim))
++	{
++		return; // only normal swings; katas and special attacks keep going
++	}
++	if (ps->saberBlocked != BLOCKED_NONE)
++	{
++		return; // already blocked / bouncing this frame
++	}
++	ps->saberBounceMove = LS_NONE; // pick the bounce that fits this swing
++	ps->saberBlocked = BLOCKED_ATK_BOUNCE;
++	ps->userInt3 &= ~(1 << FLAG_SLOWBOUNCE);
++	ps->saberEventFlags |= SEF_HITENEMY;
++	if (MB2_IsPlayer(attacker) || MB2_IsPlayer(victim))
++	{
++		MB2_Log(va("BODYBOUNCE %s -> %s, move %d", MB2_Name(attacker), MB2_Name(victim), ps->saberMove));
++	}
 +}
