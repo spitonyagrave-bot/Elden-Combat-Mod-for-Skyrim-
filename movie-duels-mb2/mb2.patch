@@ -127,10 +127,10 @@ index 3bbd3f3..41557d0 100644
  					}
 diff --git a/code/game/wp_saber_mb2.cpp b/code/game/wp_saber_mb2.cpp
 new file mode 100644
-index 0000000..6cfe799
+index 0000000..8b3ec3f
 --- /dev/null
 +++ b/code/game/wp_saber_mb2.cpp
-@@ -0,0 +1,843 @@
+@@ -0,0 +1,871 @@
 +/*
 +===========================================================================
 +MB2-style saber blocking layer for Movie Duels (SP).
@@ -757,6 +757,8 @@ index 0000000..6cfe799
 +// turns with the angle you look at the enemy. On target the whole ring glows.
 +// The aspect ratio is corrected so the ring stays round on widescreen.
 +static float aspect_fix = 1.0f; // set each frame by MB2_DrawWheel
++static mb2Zone_t mb2_hud_inc_zone = { 0, 0 }; // last incoming swing direction
++static int mb2_hud_inc_time;                   // when it was last seen
 +
 +static void MB2_SetColor(vec4_t c, const float r, const float g, const float b, const float a)
 +{
@@ -840,11 +842,15 @@ index 0000000..6cfe799
 +	{
 +		radius = 9.0f;
 +	}
-+	const float width = 3.2f;
++	const float width = 3.6f;
 +
 +	// dark ring
-+	vec4_t dark = { 0.0f, 0.0f, 0.0f, 0.3f };
-+	MB2_Arc(cx, cy, 0.0f, 2.0f * M_PI, radius, width, dark);
++	vec4_t dark = { 0.0f, 0.0f, 0.0f, 0.4f };
++	for (int f = 0; f < 8; f++)
++	{
++		const float fa = f * (M_PI / 4.0f);
++		MB2_Arc(cx, cy, fa - DEG2RAD(17.0f), fa + DEG2RAD(17.0f), radius, width, dark);
++	}
 +
 +	// flash after a block result (MB2 colours)
 +	const int since_perfect = level.time - mb2_hud_perfect_time;
@@ -877,37 +883,59 @@ index 0000000..6cfe799
 +		return;
 +	}
 +
-+	// incoming swing: arc towards the perfect block spot on the enemy
-+	const int move = enemy->client->ps.saber_move;
-+	if (!(PM_SaberInStart(move) || PM_SaberInAttack(move) || PM_SaberInTransition(move)))
-+	{
-+		return;
-+	}
-+	const mb2Zone_t incoming = MB2_IncomingZone(saber_moveData[move].startQuad);
-+	if (!incoming.col && !incoming.row)
-+	{
-+		return;
-+	}
-+	const float alpha = PM_SaberInAttack(move) ? 1.0f : 0.8f;
-+	vec4_t green = { 0.15f, 0.85f, 0.2f, alpha };
-+
++	// 8 fixed fields (no rotation): up, up-left, up-right, left, right,
++	// down, down-left, down-right. Like MB2: fixed parts around the crosshair.
 +	const mb2Zone_t aim = MB2_AimZone(player, enemy);
-+	if (MB2_ZoneMatches(incoming, aim) && !mb2_input->integer)
-+	{
-+		// on target: the whole ring glows green
-+		MB2_Arc(cx, cy, 0.0f, 2.0f * M_PI, radius, width, green);
-+		return;
-+	}
 +
-+	// target view offset for that zone (see MB2_AimZone), in degrees
-+	const float t_yaw = -incoming.col * mb2_aim_yaw->value * 1.8f;
-+	const float t_pitch = -incoming.row * mb2_aim_pitch->value * 1.8f;
-+	// on screen: right = less yaw, up = less pitch
-+	const float scr_right = -(t_yaw - d_yaw);
-+	const float scr_up = -(t_pitch - d_pitch);
-+	const float a = atan2f(scr_up, scr_right);
-+	const float half = DEG2RAD(50.0f);
-+	MB2_Arc(cx, cy, a - half, a + half, radius, width, green);
++	// incoming swing direction, held a little so it is easy to read
++	const int move = enemy->client->ps.saber_move;
++	if (PM_SaberInStart(move) || PM_SaberInAttack(move) || PM_SaberInTransition(move))
++	{
++		const mb2Zone_t z = MB2_IncomingZone(saber_moveData[move].startQuad);
++		if (z.col || z.row)
++		{
++			mb2_hud_inc_zone = z;
++			mb2_hud_inc_time = level.time;
++		}
++	}
++	const int inc_age = level.time - mb2_hud_inc_time;
++	const qboolean inc_on = mb2_hud_inc_time && inc_age >= 0 && inc_age < 900
++		&& (mb2_hud_inc_zone.col || mb2_hud_inc_zone.row) ? qtrue : qfalse;
++	const float inc_alpha = inc_age < 600 ? 1.0f : 1.0f - (inc_age - 600) / 300.0f;
++	const qboolean ready = inc_on && !mb2_input->integer && MB2_ZoneMatches(mb2_hud_inc_zone, aim) ? qtrue : qfalse;
++
++	const float half = DEG2RAD(17.0f);
++	for (int c = -1; c <= 1; c++)
++	{
++		for (int r = -1; r <= 1; r++)
++		{
++			if (!c && !r)
++			{
++				continue;
++			}
++			const float a = atan2f(static_cast<float>(r), static_cast<float>(c));
++			const qboolean is_inc = inc_on && mb2_hud_inc_zone.col == c && mb2_hud_inc_zone.row == r ? qtrue : qfalse;
++			const qboolean is_aim = aim.col == c && aim.row == r ? qtrue : qfalse;
++			vec4_t col;
++			if (is_inc && ready)
++			{
++				MB2_SetColor(col, 0.2f, 1.0f, 0.3f, inc_alpha); // green: perfect block ready
++			}
++			else if (is_inc)
++			{
++				MB2_SetColor(col, 1.0f, 0.55f, 0.05f, inc_alpha); // orange: the swing comes from here
++			}
++			else if (is_aim)
++			{
++				MB2_SetColor(col, 1.0f, 1.0f, 1.0f, 0.85f); // white: where you aim right now
++			}
++			else
++			{
++				continue; // the dark ring below shows the empty fields
++			}
++			MB2_Arc(cx, cy, a - half, a + half, radius, width + (is_inc ? 1.0f : 0.0f), col);
++		}
++	}
 +}
 +
 +// ---------------------------------------------------------------------------
